@@ -15,14 +15,9 @@ yet, just drawing the current tree state.
 - `src/types/flags.ts` - numeric constants copied from the host's
   `Flags.js` reference (colour/font type IDs, `GdiDrawText` format flags)
 - `src/data/TreeStore.ts` - load/save the JSON tree file in the foobar
-  profile (`%profile%\configuration\foo_plorg_smp.json`), plus index-based
-  reconciliation against the live playlist list to self-heal drift
-  (playlists reordered/added/removed by anything other than this panel) -
-  see "Playlist identity" below
-- `src/data/PlaylistSync.ts` - diffs successive playlist-name snapshots to
-  tell renames apart from add/remove/reorder, since SMP's
-  `on_playlists_changed()` callback fires for all of these with no detail
-  about which one happened
+  profile (`%profile%\configuration\foo_plorg_smp.json`), plus
+  index-based reconciliation against the live playlist list - see
+  "Playlist identity" below
 - `src/ui/Theme.ts` - resolves the current DUI/CUI font and text/background
   colours, with a `gdi.Font("Segoe UI", 14)` fallback if the host font
   lookup returns null
@@ -35,47 +30,55 @@ yet, just drawing the current tree state.
 - `src/main.ts` - wires the above together; registers `on_paint`/`on_size`
   in addition to Phase 1's callbacks
 
-## Playlist identity: index, not name
+## Playlist identity: index, not name - and no reorder self-healing
 
-Playlist nodes are keyed by **index**, not name. This was a deliberate
-change partway through Phase 2: I confirmed by reviewing the full `plman`
-API surface that SMP exposes no stable playlist id anywhere (no
-Guid/Uuid/persistent handle - only mutable name and mutable index), so
-index is the best primitive available, especially with duplicate playlist
-names in play.
+Playlist nodes are keyed by **index**, not name. I confirmed by reviewing
+the full `plman` API surface that SMP exposes no stable playlist id
+anywhere (no Guid/Uuid/persistent handle - only mutable name and mutable
+index), so index is the best primitive available, especially with
+duplicate playlist names in play.
 
-The cost is that index isn't *actually* stable either - anything that
-reorders, adds, or removes a playlist shifts indices around it. Since
-`on_playlists_changed()` fires identically for renames/adds/removes/
-reorders with no detail about which happened, `PlaylistSync` +
-`TreeStore.reconcile()` together run a two-step self-healing pass on every
-firing:
+Index isn't *actually* stable either, though - reordering, adding, or
+removing a playlist shifts indices around it, and `on_playlists_changed()`
+fires identically for all of these with no detail about which happened.
+An earlier version of `TreeStore.reconcile()` tried to self-heal this by
+searching for a playlist whose name matched a node's cached name when its
+index no longer checked out. That was abandoned: **a swap between two
+identically-named playlists produces zero observable change** in the name
+list SMP exposes - there's nothing for any name-based heuristic to even
+detect, let alone correct, in that case. Partial coverage (working for
+unique names, silently failing for duplicates) was judged worse than a
+plainly-stated limitation, so the search was removed rather than kept as
+a false sense of safety.
 
-1. **Rename patch** - `PlaylistSync`'s snapshot diff (unchanged from
-   Phase 1) identifies same-index renames and patches the tree's cached
-   name for that index directly, before anything else runs. This has to
-   happen first, or a rename looks indistinguishable from "this playlist
-   is gone" to the next step.
-2. **Reconcile** - every playlist node is re-validated: if
-   `plman.GetPlaylistName(index)` still matches the node's cached name,
-   nothing moved. If not, search all playlists not already claimed by
-   another node for one whose name matches the cached name, preferring
-   the candidate closest to the node's last known index when several
-   playlists share that name. No match at all means the playlist is gone.
+**Current design assumption: this panel is the exclusive way playlists get
+created, renamed, removed, or reordered.** Using foobar2000's built-in
+playlist manager (or another panel/script) to reorder or remove playlists
+while this tree exists is unsupported and can silently desync tree nodes.
+`reconcile()` still handles what's reliably detectable with index alone:
 
-This makes plain renames and single-playlist reorders self-heal correctly
-even with duplicate playlist names in the mix. What it can't do: if two
-identically-named playlists are both reordered *and* one of them renamed
-within the same host operation, there's no way to tell which node should
-end up where - this needs a stable id SMP doesn't provide. Given you've
-said you'll manage playlists exclusively through this script once it's
-built out, this reconciliation is really a safety net for the main
-foobar2000 playlist UI or other panels, not the primary path.
+- **Rename** - index unchanged, name differs: cached name is refreshed in
+  place, reported in `renamed`. This is the one case that's genuinely
+  robust regardless of duplicate names, since it needs no searching at
+  all - the index tells you exactly which node to update.
+- **Append** - a playlist index beyond any currently tracked appears:
+  added as a new root-level orphan node, reported in `addedOrphans`.
+- **Truncation** - a node's index is now out of range because the
+  playlist count shrank to or past it: dropped, reported in `removed`.
 
-Schema v1 (name-only playlist nodes, no `index` field) loads without any
-explicit migration code - a node with a missing/invalid index is treated
-exactly like one whose index has drifted, and gets relocated by its cached
-name on the first reconcile pass.
+Anything else - a mid-list removal, an insertion, or a reorder - shifts
+indices out from under existing nodes with no detection or correction at
+all. Once this script's own create/rename/delete/move commands exist
+(Phases 4-6), that's a non-issue for normal use, since the script updates
+its own tree directly and authoritatively instead of inferring anything
+from `on_playlists_changed()`.
+
+Schema v1 (name-only playlist nodes, no `index` field) is no longer
+auto-migrated - since the relocation search that would have found them by
+name is gone, a v1 node simply fails its index check on first load and
+reappears as a fresh root-level orphan, losing its folder placement. Not
+worth writing a one-time migration for at this stage; flag it if it ever
+becomes a real annoyance.
 
 ## Setup
 
@@ -99,12 +102,13 @@ menu > Edit Script, or point the panel at the file directly).
 - [x] Panel loads without a script error on first run and imports existing
       playlists as root-level entries (confirmed with 5 pre-existing
       playlists).
-- [x] Renaming a playlist via the main UI is logged as a `renamed` event,
-      not a remove+add. Confirmed against the original name-keyed design;
-      the diff logic (`PlaylistSync.diffPlaylistNames`) is unchanged since,
-      but *how* a rename is applied changed with the switch to index-based
-      identity (see "Playlist identity" below) - reconfirm that renaming
-      still keeps a node in place under the new code path.
+- [x] Renaming a playlist via the main UI is logged as a `renamed` event.
+      Confirmed under both the original name-keyed design and the
+      index-keyed design that followed it. The reorder self-healing that
+      briefly existed between those two was tested, found to have a real
+      blind spot (see "Playlist identity" above), and removed - renaming
+      no longer depends on that machinery at all, so this should if
+      anything be more robust now, not less.
 - [x] Restarting foobar2000 reloads the same tree from disk, in the same
       order, with the rename persisted - `on_script_unload` -> `saveNow()`
       and the `utils.WriteTextFile`/`ReadTextFile` round-trip both work.
@@ -138,13 +142,13 @@ unconfirmed as of this build)
       at the top).
 - [ ] Resize the panel - confirms `on_size` fires without error (it
       currently does nothing observable, this just checks it's wired).
-- [ ] Reorder a playlist via drag in the main playlist tabs (or
-      `plman.MovePlaylist` from another script) - confirms
-      `TreeStore.reconcile()`'s name-based relocation correctly finds the
-      playlist at its new index and the tree node stays put logically
-      (check the console log for a `relocated` entry). Try once with a
-      uniquely-named playlist and once with a duplicate name to see the
-      "closest index" tie-break in action.
+
+**Confirmed and accepted, not a bug to chase further:** reordering a
+playlist via the main UI's playlist tabs desyncs any tree node whose
+index falls in the shifted range - tested with both unique and duplicate
+playlist names, the latter producing no detectable change at all (see
+"Playlist identity" above). This is why the design assumption is that
+playlist management happens exclusively through this panel.
 
 ## Known limitations (by design, for this phase)
 

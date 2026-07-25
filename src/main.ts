@@ -1,16 +1,22 @@
-import { TreeStore } from './data/TreeStore';
-import { PlaylistSync } from './data/PlaylistSync';
+import { TreeStore, ReconcileResult } from './data/TreeStore';
 import { TreeView } from './ui/TreeView';
 import { isFolderNode, isPlaylistNode, TreeNode } from './types/tree';
 
 window.DefineScript('foo_plorg_smp', {
   author: 'you',
-  version: '0.2.1-phase2-index-identity',
+  version: '0.2.2-phase2-index-only',
   features: { drag_n_drop: true, grab_focus: true },
 });
 
+// Design assumption (see README "Playlist identity"): this panel is the
+// exclusive way playlists get created/renamed/removed/reordered. Using
+// foobar2000's built-in playlist manager (or another panel/script) to
+// reorder or remove playlists while this tree exists is unsupported and
+// can silently desync tree nodes - there is no reliable way to detect or
+// correct that in general, only plain renames and end-of-list add/remove
+// are handled. This was a deliberate scope decision, not an oversight.
+
 const treeStore = new TreeStore();
-const playlistSync = new PlaylistSync(treeStore);
 // Created in initialize(), after reconciliation - there's no reason to
 // build the view before the data it renders is ready.
 let treeView: TreeView | undefined;
@@ -21,6 +27,18 @@ function currentPlaylistNames(): string[] {
     names.push(plman.GetPlaylistName(i));
   }
   return names;
+}
+
+function logReconcileResult(result: ReconcileResult): void {
+  if (result.renamed.length > 0) {
+    console.log(`foo_plorg_smp: renamed ${result.renamed.map((r) => `[${r.index}] "${r.oldName}" -> "${r.newName}"`).join(', ')}`);
+  }
+  if (result.removed.length > 0) {
+    console.log(`foo_plorg_smp: dropped ${result.removed.length} node(s) whose index no longer exists: ${result.removed.map((r) => `[${r.index}] ${r.name}`).join(', ')}`);
+  }
+  if (result.addedOrphans.length > 0) {
+    console.log(`foo_plorg_smp: imported ${result.addedOrphans.length} playlist(s) not yet in the tree: ${result.addedOrphans.map((o) => `[${o.index}] ${o.name}`).join(', ')}`);
+  }
 }
 
 function logTree(nodes: TreeNode[], depth = 0): void {
@@ -37,19 +55,7 @@ function logTree(nodes: TreeNode[], depth = 0): void {
 
 function initialize(): void {
   treeStore.load();
-
-  const { relocated, unresolved, addedOrphans } = treeStore.reconcile(currentPlaylistNames());
-  if (relocated.length > 0) {
-    console.log(`foo_plorg_smp: relocated ${relocated.length} node(s) by cached name: ${relocated.map((r) => `"${r.name}" [${r.fromIndex}]->[${r.toIndex}]`).join(', ')}`);
-  }
-  if (unresolved.length > 0) {
-    console.log(`foo_plorg_smp: dropped ${unresolved.length} node(s) for playlists that no longer exist: ${unresolved.map((u) => u.name).join(', ')}`);
-  }
-  if (addedOrphans.length > 0) {
-    console.log(`foo_plorg_smp: imported ${addedOrphans.length} playlist(s) not yet in the tree: ${addedOrphans.map((o) => `[${o.index}] ${o.name}`).join(', ')}`);
-  }
-
-  playlistSync.captureBaseline();
+  logReconcileResult(treeStore.reconcile(currentPlaylistNames()));
 
   console.log('foo_plorg_smp: tree after startup reconciliation:');
   logTree(treeStore.getDocument().nodes);
@@ -68,30 +74,11 @@ function initialize(): void {
 // and invisible to the host. We work around this by explicitly attaching
 // each callback we implement to globalThis, which - unlike a bare top-level
 // declaration - still resolves to the real global object regardless of
-// bundler wrapping.
-//
-// NOTE: this hasn't been verified against a running foobar2000 instance
-// yet (no such environment available while building this). Confirm the
-// panel actually receives on_playlists_changed after loading the built
-// bundle before relying on it - see README "Verification checklist".
+// bundler wrapping. Confirmed working against a real foobar2000 instance.
 // ---------------------------------------------------------------------------
 
 function on_playlists_changed(): void {
-  const { diff, reconcile } = playlistSync.onPlaylistsChanged();
-
-  if (diff.renamed.length > 0) {
-    console.log(`foo_plorg_smp: renamed ${diff.renamed.map((r) => `"${r.oldName}" -> "${r.newName}"`).join(', ')}`);
-  }
-  if (reconcile.relocated.length > 0) {
-    console.log(`foo_plorg_smp: relocated ${reconcile.relocated.length} node(s) by cached name: ${reconcile.relocated.map((r) => `"${r.name}" [${r.fromIndex}]->[${r.toIndex}]`).join(', ')}`);
-  }
-  if (reconcile.unresolved.length > 0) {
-    console.log(`foo_plorg_smp: dropped ${reconcile.unresolved.length} node(s) for playlists that no longer exist: ${reconcile.unresolved.map((u) => u.name).join(', ')}`);
-  }
-  if (reconcile.addedOrphans.length > 0) {
-    console.log(`foo_plorg_smp: imported ${reconcile.addedOrphans.length} playlist(s) not yet in the tree: ${reconcile.addedOrphans.map((o) => `[${o.index}] ${o.name}`).join(', ')}`);
-  }
-
+  logReconcileResult(treeStore.reconcile(currentPlaylistNames()));
   window.Repaint();
 }
 
