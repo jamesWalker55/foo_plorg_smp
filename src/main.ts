@@ -5,7 +5,7 @@ import { isFolderNode, isPlaylistNode, TreeNode } from './types/tree';
 
 window.DefineScript('foo_plorg_smp', {
   author: 'you',
-  version: '0.2.1-phase2-index-identity',
+  version: '0.3.0-phase3-selection',
   features: { drag_n_drop: true, grab_focus: true },
 });
 
@@ -69,11 +69,6 @@ function initialize(): void {
 // each callback we implement to globalThis, which - unlike a bare top-level
 // declaration - still resolves to the real global object regardless of
 // bundler wrapping.
-//
-// NOTE: this hasn't been verified against a running foobar2000 instance
-// yet (no such environment available while building this). Confirm the
-// panel actually receives on_playlists_changed after loading the built
-// bundle before relying on it - see README "Verification checklist".
 // ---------------------------------------------------------------------------
 
 function on_playlists_changed(): void {
@@ -92,6 +87,23 @@ function on_playlists_changed(): void {
     console.log(`foo_plorg_smp: imported ${reconcile.addedOrphans.length} playlist(s) not yet in the tree: ${reconcile.addedOrphans.map((o) => `[${o.index}] ${o.name}`).join(', ')}`);
   }
 
+  // Selection is expressed in flat-row indices, which depend on the
+  // current tree. After reconcile() has mutated the tree (dropping
+  // unresolved nodes, adding orphans, etc.) the indices we cached may
+  // point at the wrong row. We don't bother remapping the selection
+  // intelligently here - clearing it on structural change is simpler
+  // and matches the "user manages playlists through this script"
+  // assumption: structural changes imply something happened elsewhere,
+  // and keeping a now-meaningless selection is just confusing.
+  treeView?.getSelection().clear();
+
+  window.Repaint();
+}
+
+function on_playlist_switch(): void {
+  // The active-playlist frame in the tree is redrawn from plman on
+  // every paint, so this only needs to trigger a repaint. No need to
+  // touch the selection.
   window.Repaint();
 }
 
@@ -107,11 +119,37 @@ function on_size(width: number, height: number): void {
   treeView?.onSize(width, height);
 }
 
+function on_mouse_lbtn_down(x: number, y: number, mask: number): void {
+  treeView?.onMouseLbtnDown(x, y, mask);
+}
+
+function on_mouse_lbtn_dblclk(x: number, y: number, mask: number): void {
+  treeView?.onMouseLbtnDblClick(x, y, mask);
+}
+
+function on_mouse_rbtn_up(x: number, y: number, mask: number): void {
+  treeView?.onMouseRbtnUp(x, y, mask);
+}
+
+function on_mouse_wheel(step: number): void {
+  treeView?.onMouseWheel(step);
+}
+
+function on_key_down(vkey: number, mask: number): void {
+  treeView?.onKeyDown(vkey, mask);
+}
+
 Object.assign(globalThis, {
   on_playlists_changed,
+  on_playlist_switch,
   on_script_unload,
   on_paint,
   on_size,
+  on_mouse_lbtn_down,
+  on_mouse_lbtn_dblclk,
+  on_mouse_rbtn_up,
+  on_mouse_wheel,
+  on_key_down,
 });
 
 initialize();

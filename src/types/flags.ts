@@ -56,3 +56,68 @@ export const DT = {
   NOPREFIX: 0x00000800,
   END_ELLIPSIS: 0x00008000,
 } as const;
+
+/**
+ * Windows virtual key codes - the values SMP passes to on_key_down and
+ * the values the mask argument reports for the modifier keys. Subset
+ * of what this project actually consumes; extend as new shortcuts land.
+ */
+export const VK = {
+  BACK: 0x08,
+  TAB: 0x09,
+  RETURN: 0x0d,
+  SHIFT: 0x10,
+  CONTROL: 0x11,
+  MENU: 0x12, // Alt
+  ESCAPE: 0x1b,
+  PRIOR: 0x21, // PageUp
+  NEXT: 0x22, // PageDown
+  END: 0x23,
+  HOME: 0x24,
+  LEFT: 0x25,
+  UP: 0x26,
+  RIGHT: 0x27,
+  DOWN: 0x28,
+  INSERT: 0x2d,
+  DELETE: 0x2e,
+  F1: 0x70,
+  F2: 0x71,
+  F3: 0x72,
+  F4: 0x73,
+  F5: 0x74,
+  F6: 0x75,
+  F7: 0x76,
+  F8: 0x77,
+  F9: 0x78,
+  F10: 0x79,
+  F11: 0x7a,
+  F12: 0x7b,
+} as const;
+
+/**
+ * Bit values for the `mask` argument of on_mouse_* callbacks. The mouse-
+ * button bits come first (matches Windows MK_* convention); the
+ * modifier bits use the same positions as the VK codes above so a single
+ * helper can AND a mask with one of these and read it as a boolean.
+ *
+ * NOTE: this layout is the Windows-expected one, which is what SMP's
+ * docs use as their reference. If the actual mask format SMP delivers
+ * differs, the input handlers will silently treat "shift held" as
+ * "ctrl held" etc. - verify against a real install before shipping.
+ */
+export const MouseMask = {
+  LBUTTON: 0x01,
+  RBUTTON: 0x02,
+  SHIFT: 0x04,
+  CONTROL: 0x08,
+  MBUTTON: 0x10,
+  XBUTTON1: 0x20,
+  XBUTTON2: 0x40,
+} as const;
+
+/** Convenience for keyboard `mask` (modifiers only, no button bits). */
+export const KeyMask = {
+  SHIFT: 0x01,
+  CONTROL: 0x02,
+  ALT: 0x04,
+} as const;

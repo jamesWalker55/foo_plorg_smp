@@ -190,6 +190,7 @@ interface SmpCallbacks {
    */
   on_playlists_changed?(): void;
 
+  /** Fired when the active playlist changes. */
   on_playlist_switch?(): void;
   on_playlist_items_added?(playlistIndex: number): void;
   on_playlist_items_removed?(playlistIndex: number, newCount: number): void;
@@ -203,7 +204,7 @@ interface SmpCallbacks {
   on_mouse_leave?(): void;
   on_mouse_wheel?(step: number): void;
 
-  on_key_down?(vkey: number): void;
+  on_key_down?(vkey: number, mask: number): void;
   on_key_up?(vkey: number): void;
 
   on_drag_enter?(action: unknown, x: number, y: number, mask: number): void;

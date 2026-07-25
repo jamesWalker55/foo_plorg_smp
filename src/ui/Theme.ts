@@ -4,6 +4,12 @@ export interface Theme {
   font: GdiFont;
   textColour: number;
   backgroundColour: number;
+  selectionTextColour: number;
+  selectionBackgroundColour: number;
+  /** Frame drawn around the row that is the currently-active playlist
+   *  (plman.ActivePlaylist), to distinguish "selected for ops" from
+   *  "selected for playback" at a glance. */
+  activeItemFrameColour: number;
 }
 
 const FALLBACK_FONT_NAME = 'Segoe UI';
@@ -22,9 +28,20 @@ function getFallbackFont(): GdiFont {
 }
 
 /**
- * Reads the current DUI/CUI font + text/background colours. Call this once
- * at startup and again from on_colours_changed / on_font_changed once those
- * are wired up (not yet, in this phase).
+ * Reads the current DUI/CUI font + text/background/selection colours.
+ *
+ * Call this once at startup and again from on_colours_changed / on_font_changed
+ * once those are wired up (not yet, in this phase). The selection pair is
+ * what makes selected rows readable - the panel draws a selection
+ * background using `selectionBackgroundColour` and switches the row's
+ * text to `selectionTextColour` on top, mirroring how the rest of
+ * foobar2000 paints highlighted items in its own list views.
+ *
+ * CUI additionally exposes a separate `activeItemFrameColour` (a frame
+ * drawn around the active playlist). DUI doesn't have an equivalent
+ * concept in its public colour set, so we reuse the selection frame
+ * colour there - close enough that "this is the playing one" is still
+ * visually distinct from "this is selected but not playing."
  */
 export function resolveTheme(): Theme {
   const isDui = window.InstanceType === 1;
@@ -41,5 +58,24 @@ export function resolveTheme(): Theme {
     ? window.GetColourDUI(ColourTypeDUI.background)
     : window.GetColourCUI(ColourTypeCUI.background);
 
-  return { font, textColour, backgroundColour };
+  const selectionTextColour = isDui
+    ? window.GetColourDUI(ColourTypeDUI.text) // DUI has no separate selection-text colour; falls back to plain text
+    : window.GetColourCUI(ColourTypeCUI.selectionText);
+
+  const selectionBackgroundColour = isDui
+    ? window.GetColourDUI(ColourTypeDUI.selection)
+    : window.GetColourCUI(ColourTypeCUI.selectionBackground);
+
+  const activeItemFrameColour = isDui
+    ? window.GetColourDUI(ColourTypeDUI.selection)
+    : window.GetColourCUI(ColourTypeCUI.activeItemFrame);
+
+  return {
+    font,
+    textColour,
+    backgroundColour,
+    selectionTextColour,
+    selectionBackgroundColour,
+    activeItemFrameColour,
+  };
 }
