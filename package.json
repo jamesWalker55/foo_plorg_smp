@@ -1,0 +1,17 @@
+{
+  "name": "foo_plorg_smp",
+  "version": "0.1.0",
+  "description": "foo_plorg (Playlist Organizer) reimplementation for foobar2000 Spider Monkey Panel",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "npm run typecheck && node build.mjs",
+    "build:release": "npm run typecheck && node build.mjs --minify",
+    "watch": "node build.mjs --watch"
+  },
+  "devDependencies": {
+    "esbuild": "^0.23.0",
+    "typescript": "^5.5.0"
+  }
+}

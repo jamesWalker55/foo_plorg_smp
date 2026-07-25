@@ -1,0 +1,31 @@
+{
+  "compilerOptions": {
+    /* SMP runs SpiderMonkey conformant to ES2019 - do not target newer syntax
+       without checking the API-changes page first. */
+    "target": "ES2019",
+    "lib": ["ES2019"],
+
+    /* IMPORTANT: never add "DOM" here. SMP defines its own global `window`
+       object (panel-scoped), unrelated to the browser Window interface.
+       Pulling in DOM lib types will silently shadow our ambient smp.d.ts
+       declarations for `window` and mask real type errors. */
+
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+
+    /* We only type-check with tsc; esbuild does the actual emit. */
+    "noEmit": true,
+
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/*"]
+    }
+  },
+  "include": ["src/**/*.ts"]
+}
