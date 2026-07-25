@@ -71,6 +71,9 @@ declare const utils: {
   FileExists(path: string): boolean;
   IsDirectory(path: string): boolean;
   IsFile(path: string): boolean;
+
+  /** True if the given virtual-key is currently held down. See types/flags.ts VK. */
+  IsKeyPressed(vkey: number): boolean;
 };
 
 // ---------------------------------------------------------------------------
@@ -128,6 +131,16 @@ declare const window: {
   readonly Height: number;
   /** 0 = Columns UI, 1 = Default UI - determines which GetColourXXX/GetFontXXX pair to call. */
   readonly InstanceType: 0 | 1;
+
+  /**
+   * Which keys the host should route to this panel instead of handling
+   * itself (arrow-key focus navigation, tab, etc). Set with the DLGC_*
+   * bitflags from types/flags.ts - e.g. `window.DlgCode = DLGC.WANTARROWS`.
+   * Despite the Callbacks.js doc prose phrasing it as a function call,
+   * the authoritative API listing declares this as a plain read/write
+   * property, not a method - confirmed against foo_spider_monkey_panel.js.
+   */
+  DlgCode: number;
 
   Repaint(force?: boolean): void;
   RepaintRect(x: number, y: number, w: number, h: number, force?: boolean): void;

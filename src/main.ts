@@ -1,12 +1,19 @@
 import { TreeStore, ReconcileResult } from './data/TreeStore';
 import { TreeView } from './ui/TreeView';
 import { isFolderNode, isPlaylistNode, TreeNode } from './types/tree';
+import { DLGC } from './types/flags';
 
 window.DefineScript('foo_plorg_smp', {
   author: 'you',
-  version: '0.2.2-phase2-index-only',
+  version: '0.3.0-phase3-selection-nav',
   features: { drag_n_drop: true, grab_focus: true },
 });
+
+// Requesting arrow keys is required for on_key_down to receive them at
+// all - see smp.d.ts DlgCode doc comment for why this is a property
+// assignment rather than the function-call syntax the Callbacks.js docs
+// prose suggests.
+window.DlgCode = DLGC.WANTARROWS;
 
 // Design assumption (see README "Playlist identity"): this panel is the
 // exclusive way playlists get created/renamed/removed/reordered. Using
@@ -79,6 +86,7 @@ function initialize(): void {
 
 function on_playlists_changed(): void {
   logReconcileResult(treeStore.reconcile(currentPlaylistNames()));
+  treeView?.pruneSelection();
   window.Repaint();
 }
 
@@ -94,11 +102,30 @@ function on_size(width: number, height: number): void {
   treeView?.onSize(width, height);
 }
 
+function on_mouse_lbtn_down(x: number, y: number, mask: number): void {
+  treeView?.handleMouseDown(x, y, mask);
+  window.Repaint();
+}
+
+function on_mouse_lbtn_dblclk(x: number, y: number, mask: number): void {
+  void mask;
+  treeView?.handleDoubleClick(x, y);
+  window.Repaint();
+}
+
+function on_key_down(vkey: number): void {
+  treeView?.handleKeyDown(vkey);
+  window.Repaint();
+}
+
 Object.assign(globalThis, {
   on_playlists_changed,
   on_script_unload,
   on_paint,
   on_size,
+  on_mouse_lbtn_down,
+  on_mouse_lbtn_dblclk,
+  on_key_down,
 });
 
 initialize();

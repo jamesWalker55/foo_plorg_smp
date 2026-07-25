@@ -4,31 +4,60 @@ A reimplementation of foobar2000 v1's `foo_plorg` (playlist organizer /
 folder tree) as a foobar2000 v2 Spider Monkey Panel script, written in
 TypeScript and bundled to a single flat JS file.
 
-## Status: Phase 2 - static tree rendering
+## Status: Phase 3 - selection, keyboard navigation, playlist activation
 
-Phase 1 (data layer) is complete and confirmed against a real foobar2000 +
-SMP install - see "Verification status" below. Phase 2 adds
-non-interactive rendering on top of it: no click/drag/keyboard handling
-yet, just drawing the current tree state.
+Phases 1 (data layer) and 2 (static rendering) are complete and confirmed
+against a real foobar2000 + SMP install - see "Verification status"
+below. Phase 3 makes the panel respond to input for the first time.
 
-- `src/types/tree.ts` - tree document schema (folders + playlist refs)
+- `src/types/tree.ts` - tree document schema (folders + playlist refs).
+  Schema bumped to v3 in this phase: every node now carries a stable `id`
+  (see below for why).
 - `src/types/flags.ts` - numeric constants copied from the host's
-  `Flags.js` reference (colour/font type IDs, `GdiDrawText` format flags)
+  `Flags.js` reference (colour/font type IDs, `GdiDrawText` format flags,
+  mouse-mask/`DlgCode`/virtual-key constants added this phase)
 - `src/data/TreeStore.ts` - load/save the JSON tree file in the foobar
   profile (`%profile%\configuration\foo_plorg_smp.json`), plus
   index-based reconciliation against the live playlist list - see
-  "Playlist identity" below
-- `src/ui/Theme.ts` - resolves the current DUI/CUI font and text/background
-  colours, with a `gdi.Font("Segoe UI", 14)` fallback if the host font
+  "Playlist identity" below. This phase adds `setFolderExpanded()` and
+  `findNodeById()`, and backfills missing/colliding node ids on load.
+- `src/ui/Theme.ts` - resolves the current DUI/CUI font and
+  text/background/**selection** colours (selection colours added this
+  phase), with a `gdi.Font("Segoe UI", 14)` fallback if the host font
   lookup returns null
 - `src/ui/TreeLayout.ts` - flattens the (possibly collapsed) tree into the
-  linear row list rendering and virtualization both work from
-- `src/ui/TreeView.ts` - draws the visible rows only (virtualized against
-  `window.Height`), clean indentation (no connector lines), plain-text
-  folder disclosure markers (`▾`/`▸` - no icons, per current UX decisions),
-  and a visual-only scrollbar
-- `src/main.ts` - wires the above together; registers `on_paint`/`on_size`
-  in addition to Phase 1's callbacks
+  linear row list rendering, hit-testing, and keyboard nav all work from;
+  now also records each row's parent folder (for Left-arrow-to-parent)
+- `src/ui/Selection.ts` - **new this phase.** Tracks selected node ids,
+  keyboard focus, and the shift-click/shift-arrow range anchor, keyed by
+  node id rather than row index or object reference (both are unstable
+  across a reconcile() pass - see "Why node ids" below)
+- `src/ui/TreeView.ts` - draws the visible rows (virtualized against
+  `window.Height`), highlighting selected rows; hit-tests mouse clicks
+  against rows and (for folders) a fixed-width glyph zone; handles
+  click/double-click/arrow-key/Enter input; activates a playlist via
+  `plman.ActivePlaylist` on click (if `options.activateOnSingleClick`) or
+  double-click (always)
+- `src/main.ts` - wires the above together; sets `window.DlgCode` so
+  arrow keys actually reach the panel; registers
+  `on_mouse_lbtn_down`/`on_mouse_lbtn_dblclk`/`on_key_down` in addition to
+  earlier phases' callbacks
+
+## Why node ids (schema v3)
+
+Selection needs to track "the same node" across renders and across
+`reconcile()` calls. Playlist nodes already have a natural handle
+(`index`), but folder nodes don't, and worse: `reconcile()`'s `walk()`
+rebuilds every folder object via spread (`{ ...node, children: ... }`) on
+every single pass, whether or not that folder actually changed - so even
+object reference isn't stable for folders from one `on_playlists_changed`
+firing to the next. Rather than rework `reconcile()` to preserve
+references only when nothing changed, every node now carries a small
+stable `id: string` (a monotonic per-document counter, see
+`generateNodeId()`), used solely for UI state - selection, keyboard
+focus, and (later) drag-and-drop/context-menu targeting. It is completely
+independent of playlist `index`. Schema v1/v2 files missing this field
+get ids backfilled automatically on load.
 
 ## Playlist identity: index, not name - and no reorder self-healing
 
@@ -116,6 +145,12 @@ menu > Edit Script, or point the panel at the file directly).
       up correctly by SMP's callback dispatch despite esbuild's IIFE
       wrapper. This was the biggest unverified assumption in this phase -
       it holds.
+- [x] Phase 2 rendering confirmed: `▾`/`▸` folder disclosure prefixes
+      render correctly (both expanded/collapsed), font and colours match
+      the surrounding DUI/CUI theme (dark mode included), the scrollbar
+      renders correctly once content exceeds one screen, and resizing the
+      panel correctly re-renders both the trimmed (ellipsized) playlist
+      names and the scrollbar.
 
 **Known benign quirk:** the full startup sequence logs twice the first
 time a script edit is applied via the panel's Edit Script dialog. This is
@@ -124,25 +159,6 @@ committing it to the panel, then once for real - not a bug here, and it
 does not recur on a normal foobar2000 restart. Confirmed harmless since
 `initialize()`/`reconcile()` are idempotent.
 
-## Phase 2 verification checklist (needs a real foobar2000 + SMP install -
-unconfirmed as of this build)
-
-- [ ] Panel draws the reconciled tree as plain text, correctly indented,
-      with `▾`/`▸` prefixes on folders (none exist yet on a first run -
-      create one via editing `foo_plorg_smp.json` by hand to check, since
-      folder creation UI is Phase 6).
-- [ ] Font and colours match the surrounding DUI/CUI theme rather than
-      falling back to Segoe UI / black - confirms `resolveTheme()` picked
-      the right `InstanceType` branch.
-- [ ] Add enough dummy playlists (or shrink the panel) to exceed one
-      screen of rows - confirms virtualization only draws visible rows
-      (watch for missing/misaligned rows, not just a crash) and that the
-      scrollbar thumb appears, sized/positioned plausibly, at
-      `scrollOffsetPx = 0` (nothing sets it yet, so it should always sit
-      at the top).
-- [ ] Resize the panel - confirms `on_size` fires without error (it
-      currently does nothing observable, this just checks it's wired).
-
 **Confirmed and accepted, not a bug to chase further:** reordering a
 playlist via the main UI's playlist tabs desyncs any tree node whose
 index falls in the shifted range - tested with both unique and duplicate
@@ -150,20 +166,70 @@ playlist names, the latter producing no detectable change at all (see
 "Playlist identity" above). This is why the design assumption is that
 playlist management happens exclusively through this panel.
 
+## Phase 3 verification checklist (needs a real foobar2000 + SMP install -
+unconfirmed as of this build)
+
+- [ ] Click a row - it highlights with the selection colours, and nothing
+      else changes selection state.
+- [ ] Ctrl+click a second row - both rows now selected; ctrl+click one of
+      them again to deselect just that one.
+- [ ] Shift+click a third row - selects the contiguous visible range from
+      the first-clicked row through the shift-clicked one, replacing the
+      prior selection.
+- [ ] Up/Down arrow keys move a single-row selection. **Requires "Grab
+      focus" - if arrow keys do nothing, check the panel's Configure
+      dialog for a "Grab focus" option separate from the
+      `features.grab_focus` passed to `DefineScript`; the Callbacks.js
+      docs reference such a setting and it's unconfirmed whether
+      `DefineScript`'s option alone satisfies it.**
+- [ ] Shift+Up/Shift+Down extends the range from the last plain
+      click/arrow-move, same as shift-click.
+- [ ] Home/End jump to the first/last visible row; PageUp/PageDown jump by
+      roughly one screen.
+- [ ] Clicking directly on a folder's `▾`/`▸` glyph toggles it without
+      needing a double-click. The hit zone is a fixed-width approximation
+      (see `GLYPH_HIT_WIDTH_PX` in `TreeView.ts`) since mouse callbacks
+      don't receive a `GdiGraphics` to measure the actual glyph width -
+      confirm it doesn't feel obviously mis-sized at your font/DPI.
+- [ ] Double-clicking anywhere else on a folder row also toggles it.
+- [ ] Right arrow on a collapsed folder expands it; on an already-expanded
+      folder with children, moves focus to the first child. Left arrow on
+      an expanded folder collapses it; otherwise moves focus to the
+      parent folder (no-op at the root).
+- [ ] Enter on a focused playlist row switches foobar's active playlist
+      (`plman.ActivePlaylist`); Enter on a folder toggles it, matching
+      double-click.
+- [ ] Double-click on a playlist row always switches the active playlist,
+      regardless of the (currently JSON-only, no UI yet) 
+      `activateOnSingleClick` option.
+- [ ] After any of the above, scroll position auto-adjusts to keep the
+      focused/clicked row visible when it was near the top/bottom edge.
+
 ## Known limitations (by design, for this phase)
 
 - Playlist identity and reorder self-healing have real limits with
   duplicate names combined with simultaneous renames - see "Playlist
   identity" above for the full explanation.
-- No click/drag/keyboard handling, no context menu, no folder creation UI
+- No drag-and-drop, no context menu, no folder creation UI, no F2 rename
   yet - the tree can currently only grow folders by hand-editing the JSON
-  file. That's Phases 3-6.
+  file, and selection doesn't yet do anything besides highlight + (for
+  playlists) activation. That's Phases 4-6.
+- The folder glyph click-zone is a fixed pixel width, not measured
+  against the actual rendered glyph - see the Phase 3 checklist above.
 - Colours/fonts are read once at startup - `on_colours_changed` and
   `on_font_changed` aren't wired up yet, so live theme changes in
   DUI/CUI preferences won't be reflected until the panel reloads.
+- Selection is cleared implicitly whenever a selected/focused node is
+  dropped by `reconcile()` (via `pruneSelection()`), with no attempt to
+  carry it over - e.g. selecting a playlist then renaming it externally
+  keeps the selection (index unchanged), but selecting one that then gets
+  removed externally will silently clear just that entry from the
+  selection, not the whole thing.
 
-## Next: Phase 3
+## Next: Phase 4
 
-Selection and keyboard navigation: click to select, ctrl/shift
-multi-select, arrow-key navigation, and click-to-expand/collapse on
-folders - the first phase where the panel responds to input at all.
+Inline rename: F2 opens an edit box overlaid on the focused row, Enter
+commits, Escape cancels, and folder-name collisions among siblings get
+handled. This is also naturally where `activateOnSingleClick` gets an
+actual settings UI, rather than only being editable by hand in the JSON
+file.

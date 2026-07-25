@@ -4,6 +4,7 @@ import {
   PlaylistNode,
   TREE_SCHEMA_VERSION,
   createEmptyDocument,
+  generateNodeId,
   isFolderNode,
   isPlaylistNode,
 } from '../types/tree';
@@ -45,14 +46,15 @@ export class TreeStore {
    * state. A corrupt file is preserved alongside a ".bak" copy rather than
    * silently overwritten, so nothing is lost.
    *
-   * Note: schema v1 files (name-only playlist nodes, no `index` field) are
-   * no longer auto-migrated by relocating nodes via name search - that
-   * machinery was removed (see "Playlist identity" in the README for why).
-   * A v1 node loads with `index` effectively invalid, so reconcile() drops
-   * it and it reappears as a fresh root-level orphan instead of keeping
-   * its folder placement. Acceptable for pre-release use; if this ever
-   * matters, write a one-time explicit migration instead of resurrecting
-   * the relocation search.
+   * Note: schema v1 files (name-only playlist nodes, no `index`/`id`
+   * fields) are no longer auto-migrated for playlist *placement* - the
+   * relocation-by-name search that used to attempt that was removed (see
+   * "Playlist identity" in the README for why). A v1 node loads with
+   * `index` effectively invalid, so reconcile() drops it and it
+   * reappears as a fresh root-level orphan instead of keeping its folder
+   * placement. Node *ids* (needed for Phase 3 selection tracking) ARE
+   * backfilled automatically for any v1/v2 node missing one, via
+   * backfillMissingIds() below - that part costs nothing to keep general.
    */
   load(): void {
     if (!utils.FileExists(this.storagePath)) {
@@ -85,7 +87,9 @@ export class TreeStore {
           colorScheme: 'default',
           ...parsed.options,
         },
+        nextNodeId: typeof parsed.nextNodeId === 'number' ? parsed.nextNodeId : 1,
       };
+      this.backfillMissingIds();
     } catch (err) {
       console.log(`foo_plorg_smp: failed to load tree file, starting empty. Reason: ${String(err)}`);
       this.backupCorruptFile();
@@ -191,6 +195,7 @@ export class TreeStore {
     }
     const newPlaylistNodes: PlaylistNode[] = addedOrphans.map((o) => ({
       type: 'playlist',
+      id: generateNodeId(this.document),
       index: o.index,
       name: o.name,
     }));
@@ -205,6 +210,78 @@ export class TreeStore {
     }
 
     return { document: this.document, renamed, removed, addedOrphans };
+  }
+
+  /**
+   * Toggles/sets a folder's expanded state by id. Returns false if no
+   * folder with that id exists (e.g. it was concurrently removed).
+   */
+  setFolderExpanded(id: string, expanded: boolean): boolean {
+    const walk = (nodes: TreeNode[]): boolean => {
+      for (const node of nodes) {
+        if (isFolderNode(node)) {
+          if (node.id === id) {
+            node.expanded = expanded;
+            return true;
+          }
+          if (walk(node.children)) {
+            return true;
+          }
+        }
+      }
+      return false;
+    };
+
+    const found = walk(this.document.nodes);
+    if (found) {
+      this.scheduleSave();
+    }
+    return found;
+  }
+
+  /** Finds a node anywhere in the tree by its stable id. */
+  findNodeById(id: string): TreeNode | null {
+    const walk = (nodes: TreeNode[]): TreeNode | null => {
+      for (const node of nodes) {
+        if (node.id === id) {
+          return node;
+        }
+        if (isFolderNode(node)) {
+          const found = walk(node.children);
+          if (found) {
+            return found;
+          }
+        }
+      }
+      return null;
+    };
+    return walk(this.document.nodes);
+  }
+
+  /** Assigns a fresh id to any node that's missing one (schema v1/v2 files
+   *  predate the `id` field) or whose id collides with an already-seen
+   *  one in this document (defends against a hand-edited file). */
+  private backfillMissingIds(): void {
+    const seen = new Set<string>();
+    let changed = false;
+
+    const walk = (nodes: TreeNode[]): void => {
+      for (const node of nodes) {
+        if (typeof node.id !== 'string' || node.id === '' || seen.has(node.id)) {
+          node.id = generateNodeId(this.document);
+          changed = true;
+        }
+        seen.add(node.id);
+        if (isFolderNode(node)) {
+          walk(node.children);
+        }
+      }
+    };
+    walk(this.document.nodes);
+
+    if (changed) {
+      this.scheduleSave();
+    }
   }
 
   private backupCorruptFile(): void {

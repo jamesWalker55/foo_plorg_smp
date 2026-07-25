@@ -4,6 +4,16 @@ export interface Theme {
   font: GdiFont;
   textColour: number;
   backgroundColour: number;
+  /** Fill colour for a selected row's background. */
+  selectionBackgroundColour: number;
+  /**
+   * Text colour to use on top of selectionBackgroundColour. CUI exposes a
+   * dedicated selection-text colour; DUI does not (only text/background/
+   * highlight/selection), so DUI reuses the normal text colour on the
+   * selection background - acceptable for now, revisit if it reads poorly
+   * against a particular DUI colour scheme.
+   */
+  selectionTextColour: number;
 }
 
 const FALLBACK_FONT_NAME = 'Segoe UI';
@@ -22,9 +32,9 @@ function getFallbackFont(): GdiFont {
 }
 
 /**
- * Reads the current DUI/CUI font + text/background colours. Call this once
- * at startup and again from on_colours_changed / on_font_changed once those
- * are wired up (not yet, in this phase).
+ * Reads the current DUI/CUI font + text/background/selection colours.
+ * Call this once at startup and again from on_colours_changed /
+ * on_font_changed once those are wired up (not yet, in this phase).
  */
 export function resolveTheme(): Theme {
   const isDui = window.InstanceType === 1;
@@ -41,5 +51,11 @@ export function resolveTheme(): Theme {
     ? window.GetColourDUI(ColourTypeDUI.background)
     : window.GetColourCUI(ColourTypeCUI.background);
 
-  return { font, textColour, backgroundColour };
+  const selectionBackgroundColour = isDui
+    ? window.GetColourDUI(ColourTypeDUI.selection)
+    : window.GetColourCUI(ColourTypeCUI.selectionBackground);
+
+  const selectionTextColour = isDui ? textColour : window.GetColourCUI(ColourTypeCUI.selectionText);
+
+  return { font, textColour, backgroundColour, selectionBackgroundColour, selectionTextColour };
 }
