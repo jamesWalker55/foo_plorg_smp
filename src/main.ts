@@ -1,15 +1,19 @@
 import { TreeStore } from './data/TreeStore';
 import { PlaylistSync } from './data/PlaylistSync';
+import { TreeView } from './ui/TreeView';
 import { isFolderNode, isPlaylistNode, TreeNode } from './types/tree';
 
 window.DefineScript('foo_plorg_smp', {
   author: 'you',
-  version: '0.1.0-phase1',
+  version: '0.2.0-phase2',
   features: { drag_n_drop: true, grab_focus: true },
 });
 
 const treeStore = new TreeStore();
 const playlistSync = new PlaylistSync(treeStore);
+// Created in initialize(), after reconciliation - there's no reason to
+// build the view before the data it renders is ready.
+let treeView: TreeView | undefined;
 
 function currentPlaylistNames(): string[] {
   const names: string[] = [];
@@ -46,6 +50,9 @@ function initialize(): void {
 
   console.log('foo_plorg_smp: tree after startup reconciliation:');
   logTree(treeStore.getDocument().nodes);
+
+  treeView = new TreeView(treeStore);
+  window.Repaint(true);
 }
 
 // ---------------------------------------------------------------------------
@@ -83,9 +90,19 @@ function on_script_unload(): void {
   treeStore.saveNow();
 }
 
+function on_paint(gr: GdiGraphics): void {
+  treeView?.paint(gr);
+}
+
+function on_size(width: number, height: number): void {
+  treeView?.onSize(width, height);
+}
+
 Object.assign(globalThis, {
   on_playlists_changed,
   on_script_unload,
+  on_paint,
+  on_size,
 });
 
 initialize();

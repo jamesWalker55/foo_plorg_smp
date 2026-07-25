@@ -74,17 +74,73 @@ declare const utils: {
 };
 
 // ---------------------------------------------------------------------------
+// gdi namespace + GdiFont / GdiGraphics
+// ---------------------------------------------------------------------------
+
+declare const gdi: {
+  /** Returns null if the requested font was not found. */
+  Font(name: string, sizePx: number, style?: number): GdiFont | null;
+};
+
+interface GdiFont {
+  readonly Name: string;
+  readonly Size: number;
+  readonly Style: number;
+  readonly Height: number;
+}
+
+/**
+ * The graphics context passed into on_paint(). Only the subset of
+ * GdiGraphics methods this project uses is declared - see
+ * https://theqwertiest.github.io/foo_spider_monkey_panel/assets/generated_files/docs/html/GdiGraphics.html
+ * for the full surface if more is needed later.
+ */
+interface GdiGraphics {
+  FillSolidRect(x: number, y: number, w: number, h: number, colour: number): void;
+  DrawRect(x: number, y: number, w: number, h: number, lineWidth: number, colour: number): void;
+  DrawLine(x1: number, y1: number, x2: number, y2: number, lineWidth: number, colour: number): void;
+
+  /**
+   * Faster/better rendering than DrawString - preferred for normal text.
+   * Do not use outside the on_paint GdiGraphics instance (ClearType artifacts).
+   */
+  GdiDrawText(
+    str: string,
+    font: GdiFont,
+    colour: number,
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    format?: number
+  ): void;
+
+  CalcTextWidth(str: string, font: GdiFont, useExact?: boolean): number;
+  CalcTextHeight(str: string, font: GdiFont): number;
+}
+
+// ---------------------------------------------------------------------------
 // window namespace (panel-scoped; NOT the browser Window)
 // ---------------------------------------------------------------------------
 
 declare const window: {
   readonly Width: number;
   readonly Height: number;
+  /** 0 = Columns UI, 1 = Default UI - determines which GetColourXXX/GetFontXXX pair to call. */
+  readonly InstanceType: 0 | 1;
+
   Repaint(force?: boolean): void;
   RepaintRect(x: number, y: number, w: number, h: number, force?: boolean): void;
 
   GetProperty<T = unknown>(name: string, defaultValue?: T): T;
   SetProperty(name: string, value: unknown): void;
+
+  /** Returns null if the requested font was not found - always have a gdi.Font() fallback ready. */
+  GetFontDUI(type: number): GdiFont | null;
+  GetFontCUI(type: number, clientGuid?: string): GdiFont | null;
+  /** Returns black if the requested colour is not available. */
+  GetColourDUI(type: number): number;
+  GetColourCUI(type: number, clientGuid?: string): number;
 
   DefineScript(
     scriptName: string,
@@ -122,7 +178,7 @@ declare function clearInterval(id: number): void;
 // ---------------------------------------------------------------------------
 
 interface SmpCallbacks {
-  on_paint?(gr: unknown): void;
+  on_paint?(gr: GdiGraphics): void;
   on_size?(width: number, height: number): void;
   on_script_unload?(): void;
 

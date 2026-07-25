@@ -20,12 +20,7 @@
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
     "forceConsistentCasingInFileNames": true,
-    "skipLibCheck": true,
-
-    "baseUrl": ".",
-    "paths": {
-      "@/*": ["src/*"]
-    }
+    "skipLibCheck": true
   },
   "include": ["src/**/*.ts"]
 }
