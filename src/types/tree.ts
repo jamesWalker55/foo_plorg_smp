@@ -3,7 +3,7 @@
  * flat playlist list. See TreeStore.ts for load/save/reconciliation logic.
  */
 
-export const TREE_SCHEMA_VERSION = 1;
+export const TREE_SCHEMA_VERSION = 2;
 
 export interface FolderNode {
   type: 'folder';
@@ -17,10 +17,21 @@ export interface FolderNode {
 export interface PlaylistNode {
   type: 'playlist';
   /**
-   * Playlists are matched by name against plman, matching legacy
-   * foo_plorg behaviour. This is intentionally simple but has a known
-   * weakness: duplicate playlist names. See TreeStore.reconcile() for
-   * how collisions are resolved (position-based tiebreak).
+   * Primary identity. SMP's plman API exposes no stable playlist id -
+   * only name and index, both mutable (confirmed by reviewing the full
+   * plman surface: no Guid/Uuid/stable-handle method exists anywhere).
+   * Index was chosen over name because playlist names are frequently
+   * duplicated in practice, while index at least holds until something
+   * reorders/adds/removes a playlist.
+   */
+  index: number;
+  /**
+   * Cached display name as of the last successful reconciliation. NOT
+   * the identity - used purely as a drift-detection/relocation hint: if
+   * plman.GetPlaylistName(index) no longer matches this, something
+   * moved, and TreeStore.reconcile() uses this cached name to try to
+   * find where the playlist went. See TreeStore.reconcile() for the
+   * full algorithm and its limitations with duplicate names.
    */
   name: string;
 }

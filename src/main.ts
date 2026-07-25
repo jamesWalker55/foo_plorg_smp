@@ -5,7 +5,7 @@ import { isFolderNode, isPlaylistNode, TreeNode } from './types/tree';
 
 window.DefineScript('foo_plorg_smp', {
   author: 'you',
-  version: '0.2.0-phase2',
+  version: '0.2.1-phase2-index-identity',
   features: { drag_n_drop: true, grab_focus: true },
 });
 
@@ -30,7 +30,7 @@ function logTree(nodes: TreeNode[], depth = 0): void {
       console.log(`${indent}[folder] ${node.name}`);
       logTree(node.children, depth + 1);
     } else if (isPlaylistNode(node)) {
-      console.log(`${indent}- ${node.name}`);
+      console.log(`${indent}- [${node.index}] ${node.name}`);
     }
   }
 }
@@ -38,12 +38,15 @@ function logTree(nodes: TreeNode[], depth = 0): void {
 function initialize(): void {
   treeStore.load();
 
-  const { removedOrphans, addedOrphans } = treeStore.reconcile(currentPlaylistNames());
-  if (removedOrphans.length > 0) {
-    console.log(`foo_plorg_smp: dropped ${removedOrphans.length} node(s) for playlists that no longer exist: ${removedOrphans.join(', ')}`);
+  const { relocated, unresolved, addedOrphans } = treeStore.reconcile(currentPlaylistNames());
+  if (relocated.length > 0) {
+    console.log(`foo_plorg_smp: relocated ${relocated.length} node(s) by cached name: ${relocated.map((r) => `"${r.name}" [${r.fromIndex}]->[${r.toIndex}]`).join(', ')}`);
+  }
+  if (unresolved.length > 0) {
+    console.log(`foo_plorg_smp: dropped ${unresolved.length} node(s) for playlists that no longer exist: ${unresolved.map((u) => u.name).join(', ')}`);
   }
   if (addedOrphans.length > 0) {
-    console.log(`foo_plorg_smp: imported ${addedOrphans.length} playlist(s) not yet in the tree: ${addedOrphans.join(', ')}`);
+    console.log(`foo_plorg_smp: imported ${addedOrphans.length} playlist(s) not yet in the tree: ${addedOrphans.map((o) => `[${o.index}] ${o.name}`).join(', ')}`);
   }
 
   playlistSync.captureBaseline();
@@ -74,16 +77,22 @@ function initialize(): void {
 // ---------------------------------------------------------------------------
 
 function on_playlists_changed(): void {
-  const diff = playlistSync.onPlaylistsChanged();
+  const { diff, reconcile } = playlistSync.onPlaylistsChanged();
+
   if (diff.renamed.length > 0) {
     console.log(`foo_plorg_smp: renamed ${diff.renamed.map((r) => `"${r.oldName}" -> "${r.newName}"`).join(', ')}`);
   }
-  if (diff.added.length > 0) {
-    console.log(`foo_plorg_smp: playlist(s) added: ${diff.added.join(', ')}`);
+  if (reconcile.relocated.length > 0) {
+    console.log(`foo_plorg_smp: relocated ${reconcile.relocated.length} node(s) by cached name: ${reconcile.relocated.map((r) => `"${r.name}" [${r.fromIndex}]->[${r.toIndex}]`).join(', ')}`);
   }
-  if (diff.removed.length > 0) {
-    console.log(`foo_plorg_smp: playlist(s) removed: ${diff.removed.join(', ')}`);
+  if (reconcile.unresolved.length > 0) {
+    console.log(`foo_plorg_smp: dropped ${reconcile.unresolved.length} node(s) for playlists that no longer exist: ${reconcile.unresolved.map((u) => u.name).join(', ')}`);
   }
+  if (reconcile.addedOrphans.length > 0) {
+    console.log(`foo_plorg_smp: imported ${reconcile.addedOrphans.length} playlist(s) not yet in the tree: ${reconcile.addedOrphans.map((o) => `[${o.index}] ${o.name}`).join(', ')}`);
+  }
+
+  window.Repaint();
 }
 
 function on_script_unload(): void {

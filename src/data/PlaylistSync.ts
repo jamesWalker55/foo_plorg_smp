@@ -1,4 +1,4 @@
-import { TreeStore } from './TreeStore';
+import { TreeStore, ReconcileResult } from './TreeStore';
 
 export interface PlaylistDiff {
   /** Same-length case: index i kept its position but changed name, and
@@ -107,21 +107,32 @@ export class PlaylistSync {
     this.prevNames = getCurrentPlaylistNames();
   }
 
-  /** Call from the global on_playlists_changed() callback. */
-  onPlaylistsChanged(): PlaylistDiff {
+  /**
+   * Call from the global on_playlists_changed() callback.
+   *
+   * Order matters here: renames are patched into the tree's cached names
+   * FIRST, before reconcile() runs. Otherwise reconcile() would see a
+   * renamed-in-place playlist's stale cached name, fail to find it at its
+   * (unchanged) index, and misclassify it as "moved or gone" - triggering
+   * an unnecessary (and for duplicate names, potentially wrong) relocation
+   * search instead of the trivial no-op a pure rename should be.
+   */
+  onPlaylistsChanged(): { diff: PlaylistDiff; reconcile: ReconcileResult } {
     const currentNames = getCurrentPlaylistNames();
     const diff = diffPlaylistNames(this.prevNames, currentNames);
     this.prevNames = currentNames;
 
     for (const r of diff.renamed) {
-      this.treeStore.renamePlaylistNode(r.oldName, r.newName);
+      this.treeStore.updateCachedName(r.index, r.newName);
     }
 
-    // reconcile() independently re-derives add/remove against the live
-    // list, so it's safe (and simplest) to always run it after applying
-    // renames - it's a no-op when nothing besides a rename happened.
-    this.treeStore.reconcile(currentNames);
+    // Always reconcile, even when the diff found nothing notable - it's
+    // cheap when nothing actually drifted (every node's cached name will
+    // still match its index on the first check), and it's the single
+    // source of truth for index validity, so there's no benefit to
+    // trying to skip it based on the diff's classification.
+    const reconcile = this.treeStore.reconcile(currentNames);
 
-    return diff;
+    return { diff, reconcile };
   }
 }

@@ -15,11 +15,12 @@ yet, just drawing the current tree state.
 - `src/types/flags.ts` - numeric constants copied from the host's
   `Flags.js` reference (colour/font type IDs, `GdiDrawText` format flags)
 - `src/data/TreeStore.ts` - load/save the JSON tree file in the foobar
-  profile (`%profile%\configuration\foo_plorg_smp.json`), plus
-  reconciliation against the live playlist list to handle drift (playlists
-  created/removed/renamed by anything other than this panel)
+  profile (`%profile%\configuration\foo_plorg_smp.json`), plus index-based
+  reconciliation against the live playlist list to self-heal drift
+  (playlists reordered/added/removed by anything other than this panel) -
+  see "Playlist identity" below
 - `src/data/PlaylistSync.ts` - diffs successive playlist-name snapshots to
-  tell renames apart from add/remove pairs, since SMP's
+  tell renames apart from add/remove/reorder, since SMP's
   `on_playlists_changed()` callback fires for all of these with no detail
   about which one happened
 - `src/ui/Theme.ts` - resolves the current DUI/CUI font and text/background
@@ -33,6 +34,48 @@ yet, just drawing the current tree state.
   and a visual-only scrollbar
 - `src/main.ts` - wires the above together; registers `on_paint`/`on_size`
   in addition to Phase 1's callbacks
+
+## Playlist identity: index, not name
+
+Playlist nodes are keyed by **index**, not name. This was a deliberate
+change partway through Phase 2: I confirmed by reviewing the full `plman`
+API surface that SMP exposes no stable playlist id anywhere (no
+Guid/Uuid/persistent handle - only mutable name and mutable index), so
+index is the best primitive available, especially with duplicate playlist
+names in play.
+
+The cost is that index isn't *actually* stable either - anything that
+reorders, adds, or removes a playlist shifts indices around it. Since
+`on_playlists_changed()` fires identically for renames/adds/removes/
+reorders with no detail about which happened, `PlaylistSync` +
+`TreeStore.reconcile()` together run a two-step self-healing pass on every
+firing:
+
+1. **Rename patch** - `PlaylistSync`'s snapshot diff (unchanged from
+   Phase 1) identifies same-index renames and patches the tree's cached
+   name for that index directly, before anything else runs. This has to
+   happen first, or a rename looks indistinguishable from "this playlist
+   is gone" to the next step.
+2. **Reconcile** - every playlist node is re-validated: if
+   `plman.GetPlaylistName(index)` still matches the node's cached name,
+   nothing moved. If not, search all playlists not already claimed by
+   another node for one whose name matches the cached name, preferring
+   the candidate closest to the node's last known index when several
+   playlists share that name. No match at all means the playlist is gone.
+
+This makes plain renames and single-playlist reorders self-heal correctly
+even with duplicate playlist names in the mix. What it can't do: if two
+identically-named playlists are both reordered *and* one of them renamed
+within the same host operation, there's no way to tell which node should
+end up where - this needs a stable id SMP doesn't provide. Given you've
+said you'll manage playlists exclusively through this script once it's
+built out, this reconciliation is really a safety net for the main
+foobar2000 playlist UI or other panels, not the primary path.
+
+Schema v1 (name-only playlist nodes, no `index` field) loads without any
+explicit migration code - a node with a missing/invalid index is treated
+exactly like one whose index has drifted, and gets relocated by its cached
+name on the first reconcile pass.
 
 ## Setup
 
@@ -57,9 +100,11 @@ menu > Edit Script, or point the panel at the file directly).
       playlists as root-level entries (confirmed with 5 pre-existing
       playlists).
 - [x] Renaming a playlist via the main UI is logged as a `renamed` event,
-      not a remove+add, and the node keeps its tree position - the
-      index-position heuristic in `PlaylistSync.diffPlaylistNames` holds
-      up against the real host.
+      not a remove+add. Confirmed against the original name-keyed design;
+      the diff logic (`PlaylistSync.diffPlaylistNames`) is unchanged since,
+      but *how* a rename is applied changed with the switch to index-based
+      identity (see "Playlist identity" below) - reconfirm that renaming
+      still keeps a node in place under the new code path.
 - [x] Restarting foobar2000 reloads the same tree from disk, in the same
       order, with the rename persisted - `on_script_unload` -> `saveNow()`
       and the `utils.WriteTextFile`/`ReadTextFile` round-trip both work.
@@ -93,17 +138,19 @@ unconfirmed as of this build)
       at the top).
 - [ ] Resize the panel - confirms `on_size` fires without error (it
       currently does nothing observable, this just checks it's wired).
+- [ ] Reorder a playlist via drag in the main playlist tabs (or
+      `plman.MovePlaylist` from another script) - confirms
+      `TreeStore.reconcile()`'s name-based relocation correctly finds the
+      playlist at its new index and the tree node stays put logically
+      (check the console log for a `relocated` entry). Try once with a
+      uniquely-named playlist and once with a duplicate name to see the
+      "closest index" tie-break in action.
 
 ## Known limitations (by design, for this phase)
 
-- Playlists are matched by **name**, not a stable ID (SMP doesn't expose
-  one). Duplicate playlist names are handled by first-available matching
-  during reconciliation - see doc comments in `TreeStore.reconcile()`.
-- Rename detection assumes a single playlist rename fires
-  `on_playlists_changed()` in isolation, with the playlist's index
-  unchanged. A rename that happens to occur in the same host operation as
-  an unrelated add/remove elsewhere in the list may be misread as a
-  remove+add instead - see `PlaylistSync.diffPlaylistNames()` doc comment.
+- Playlist identity and reorder self-healing have real limits with
+  duplicate names combined with simultaneous renames - see "Playlist
+  identity" above for the full explanation.
 - No click/drag/keyboard handling, no context menu, no folder creation UI
   yet - the tree can currently only grow folders by hand-editing the JSON
   file. That's Phases 3-6.
