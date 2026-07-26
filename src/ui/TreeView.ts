@@ -407,23 +407,7 @@ export class TreeView {
   }
 
   /**
-   * Prompts the user for a new name and applies it. Triggered by F2 on
-   * a single-row selection; ignored for empty or multi-row selections
-   * (with a popup for multi, since the user clearly tried to do
-   * something and we should tell them why nothing happened).
-   *
-   * Folders go through `TreeStore.renameFolder` (sibling-uniqueness
-   * enforced there). Playlists go through `plman.RenamePlaylist`
-   * directly - that's the canonical authority, and the tree's cached
-   * name gets updated by `PlaylistSync` when the resulting
-   * `on_playlists_changed` fires.
-   *
-   * Uses SMP's modal `utils.InputBox`. Cancel detection is via
-   * try/catch with `errorOnCancel = true` so we can distinguish
-   * "user cancelled" from "user typed nothing and clicked OK" (which
-   * we treat as a silent no-op since the empty-name check would
-   * otherwise spam them with a popup every time they hit Enter on a
-   * blank field).
+   * Prompts the user for a new name and applies it.
    */
   onRenameRequested(): void {
     if (this.selection.getSize() === 0) {
@@ -466,21 +450,14 @@ export class TreeView {
         return;
       }
     } else if (isPlaylistNode(row.node)) {
-      // plman.RenamePlaylist returns false only if the playlist is
-      // locked against renaming (or the index is out of range).
-      // foobar2000 allows duplicate playlist names, so a name
-      // collision is NOT a failure case.
       const ok = plman.RenamePlaylist(row.node.index, newName);
       if (!ok) {
-        fb.ShowPopupMessage(
-          'Rename failed. This playlist may be locked against renaming.'
-        );
+        fb.ShowPopupMessage('Rename failed. This playlist may be locked against renaming.');
         return;
       }
       // Optimistically update the cached name so the tree shows the
       // new name immediately. on_playlists_changed will fire
-      // asynchronously and reconcile, but this avoids a brief flicker
-      // of the old name between the rename and the callback.
+      // asynchronously and reconcile, but this avoids a brief flicker.
       row.node.name = newName;
       this.treeStore.scheduleSave();
     }

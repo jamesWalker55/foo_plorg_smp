@@ -14,11 +14,9 @@ const SAVE_DEBOUNCE_MS = 500;
 
 export interface ReconcileResult {
   document: TreeDocument;
-  /** Nodes whose stored index no longer matched their cached name and
-   *  were successfully relocated to where that name now lives. */
+  /** Nodes whose stored index no longer matched their GUID's current index. */
   relocated: Array<{ name: string; fromIndex: number; toIndex: number }>;
-  /** Nodes whose cached name could no longer be found anywhere in the
-   *  current playlist list, and were dropped. */
+  /** Nodes whose GUID could no longer be found in plman, and were dropped. */
   unresolved: Array<{ name: string; lastIndex: number }>;
   /** Playlists that exist in plman but weren't claimed by any tree node -
    *  imported as new root-level nodes. */
@@ -39,41 +37,24 @@ export class TreeStore {
     return this.document;
   }
 
-  /**
-   * Loads the tree file from disk. Never throws - on any failure (missing
-   * file, corrupt JSON, or a version newer than this build understands) it
-   * falls back to an empty document so the panel always starts in a usable
-   * state. A corrupt file is preserved alongside a ".bak" copy rather than
-   * silently overwritten, so nothing is lost.
-   *
-   * Documents from schema v1 (name-only playlist nodes, no `index` field)
-   * load without complaint here - reconcile() naturally migrates them,
-   * since a node with a missing/invalid `index` is treated exactly like
-   * one whose index has drifted, and gets relocated by cached name.
-   */
   load(): void {
     if (!utils.FileExists(this.storagePath)) {
       this.document = createEmptyDocument();
       return;
     }
-
     try {
       const raw = utils.ReadTextFile(this.storagePath);
       if (!raw.trim()) {
         this.document = createEmptyDocument();
         return;
       }
-
       const parsed = JSON.parse(raw) as Partial<TreeDocument>;
-
       if (typeof parsed !== 'object' || parsed === null || !Array.isArray(parsed.nodes)) {
         throw new Error('Tree file is missing a valid "nodes" array.');
       }
-
       if (typeof parsed.version !== 'number' || parsed.version > TREE_SCHEMA_VERSION) {
         throw new Error(`Unsupported tree schema version: ${String(parsed.version)}`);
       }
-
       this.document = {
         version: TREE_SCHEMA_VERSION,
         nodes: parsed.nodes as TreeNode[],
@@ -120,22 +101,6 @@ export class TreeStore {
     }
   }
 
-  /**
-   * Renames a folder in-place after enforcing sibling-uniqueness.
-   * Returns a structured result so the caller can show a precise
-   * popup message without re-deriving the reason.
-   *
-   * Why uniqueness is checked at the tree level (and not via a plman
-   * call, the way playlists are): folders are a UI-only construct with
-   * no foobar2000-side identity, so there's no external authority to
-   * defer to. Two identically-named folders under the same parent
-   * would just be confusing in any later list view, so we forbid it.
-   * Case-sensitive match, matching Windows Explorer.
-   *
-   * Playlists intentionally do NOT route through here - the caller is
-   * expected to use plman.RenamePlaylist directly, since that's where
-   * the canonical name lives and where the rename takes effect.
-   */
   renameFolder(
     folder: FolderNode,
     newName: string,
@@ -161,76 +126,20 @@ export class TreeStore {
   }
 
   /**
-   * Updates a playlist node's cached name without touching its index or
-   * position in the tree. Call this BEFORE reconcile() for any index that
-   * PlaylistSync has determined was purely renamed (not moved) - this
-   * keeps reconcile()'s "is this node still valid" check from mistaking
-   * a fresh rename for the playlist having disappeared.
+   * Re-validates every playlist node's GUID against the live playlist
+   * list, self-healing index drift, and imports any playlist not claimed
+   * by an existing node as a new root-level orphan.
    */
-  updateCachedName(index: number, newName: string): boolean {
-    const walk = (nodes: TreeNode[]): boolean => {
-      for (const node of nodes) {
-        if (isPlaylistNode(node) && node.index === index) {
-          node.name = newName;
-          return true;
-        }
-        if (isFolderNode(node) && walk(node.children)) {
-          return true;
-        }
-      }
-      return false;
-    };
-
-    const found = walk(this.document.nodes);
-    if (found) {
-      this.scheduleSave();
+  reconcile(): ReconcileResult {
+    const livePlaylists = new Map<string, { index: number; name: string }>();
+    for (let i = 0; i < plman.PlaylistCount; i++) {
+      const guid = plman.GetGUID(i);
+      livePlaylists.set(guid, { index: i, name: plman.GetPlaylistName(i) });
     }
-    return found;
-  }
 
-  /**
-   * Re-validates every playlist node's index against the live playlist
-   * list, self-healing drift via the node's cached name, and imports any
-   * playlist not claimed by an existing node as a new root-level orphan.
-   *
-   * Algorithm per node, in document order (top-to-bottom, depth-first -
-   * earlier nodes get first claim on an index when there's ambiguity):
-   *   1. If the node's index is in range, unclaimed by an earlier node in
-   *      this pass, and plman.GetPlaylistName(index) equals the node's
-   *      cached name - it's unchanged. Keep it, claim the index.
-   *   2. Otherwise, search all unclaimed indices for one whose current
-   *      name equals the node's cached name. If exactly one candidate,
-   *      relocate the node there. If several (duplicate names), prefer
-   *      the candidate closest to the node's last known index - a
-   *      best-effort heuristic, not a guarantee, when duplicates and
-   *      reordering combine (see PlaylistNode doc comment).
-   *   3. If no candidate exists at all, the playlist is gone - drop the
-   *      node.
-   *
-   * Known unresolvable edge case: a playlist that is both renamed AND
-   * moved within the same host operation, while another playlist shares
-   * its old or new name, cannot be reliably distinguished from the
-   * other's own drift. This requires a stable playlist id that SMP does
-   * not expose (confirmed against the full plman API surface).
-   */
-  reconcile(currentNames: string[]): ReconcileResult {
-    const claimedIndices = new Set<number>();
+    const claimedGuids = new Set<string>();
     const relocated: ReconcileResult['relocated'] = [];
     const unresolved: ReconcileResult['unresolved'] = [];
-
-    const findUnclaimedByName = (name: string, preferredIndex: number): number | null => {
-      const candidates: number[] = [];
-      for (let i = 0; i < currentNames.length; i++) {
-        if (!claimedIndices.has(i) && currentNames[i] === name) {
-          candidates.push(i);
-        }
-      }
-      if (candidates.length === 0) {
-        return null;
-      }
-      candidates.sort((a, b) => Math.abs(a - preferredIndex) - Math.abs(b - preferredIndex));
-      return candidates[0]!;
-    };
 
     const walk = (nodes: TreeNode[]): TreeNode[] => {
       const result: TreeNode[] = [];
@@ -240,29 +149,50 @@ export class TreeStore {
           continue;
         }
 
-        // isPlaylistNode(node) from here on.
-        const stillValid =
-          Number.isInteger(node.index) &&
-          node.index >= 0 &&
-          node.index < currentNames.length &&
-          !claimedIndices.has(node.index) &&
-          currentNames[node.index] === node.name;
+        // isPlaylistNode
+        if (!node.id) {
+          // Migration from schema v2 (index/name based) to v3 (GUID based)
+          let matchedId: string | null = null;
 
-        if (stillValid) {
-          claimedIndices.add(node.index);
-          result.push(node);
-          continue;
+          // 1. Try exact index match first
+          const guidAtIndex = plman.GetGUID(node.index);
+          if (livePlaylists.has(guidAtIndex) && livePlaylists.get(guidAtIndex)!.name === node.name && !claimedGuids.has(guidAtIndex)) {
+            matchedId = guidAtIndex;
+          } else {
+            // 2. Search by name (closest index heuristic)
+            let bestMatchIndexDiff = Infinity;
+            for (const [id, live] of livePlaylists) {
+              if (live.name === node.name && !claimedGuids.has(id)) {
+                const diff = Math.abs(live.index - node.index);
+                if (diff < bestMatchIndexDiff) {
+                  bestMatchIndexDiff = diff;
+                  matchedId = id;
+                }
+              }
+            }
+          }
+
+          if (matchedId) {
+            node.id = matchedId;
+            // Fall through to normal logic below
+          } else {
+            unresolved.push({ name: node.name, lastIndex: node.index });
+            continue; // drop
+          }
         }
 
-        const resolvedIndex = findUnclaimedByName(node.name, node.index);
-        if (resolvedIndex !== null) {
-          claimedIndices.add(resolvedIndex);
-          if (resolvedIndex !== node.index) {
-            relocated.push({ name: node.name, fromIndex: node.index, toIndex: resolvedIndex });
+        if (livePlaylists.has(node.id)) {
+          const live = livePlaylists.get(node.id)!;
+          if (live.index !== node.index) {
+            relocated.push({ name: node.name, fromIndex: node.index, toIndex: live.index });
           }
-          result.push({ ...node, index: resolvedIndex });
+          node.index = live.index;
+          node.name = live.name;
+          claimedGuids.add(node.id);
+          result.push(node);
         } else {
           unresolved.push({ name: node.name, lastIndex: node.index });
+          // dropped
         }
       }
       return result;
@@ -271,13 +201,15 @@ export class TreeStore {
     const reconciledNodes = walk(this.document.nodes);
 
     const addedOrphans: ReconcileResult['addedOrphans'] = [];
-    for (let i = 0; i < currentNames.length; i++) {
-      if (!claimedIndices.has(i)) {
-        addedOrphans.push({ index: i, name: currentNames[i]! });
+    for (const [id, live] of livePlaylists) {
+      if (!claimedGuids.has(id)) {
+        addedOrphans.push({ index: live.index, name: live.name });
       }
     }
+
     const newPlaylistNodes: PlaylistNode[] = addedOrphans.map((o) => ({
       type: 'playlist',
+      id: plman.GetGUID(o.index),
       index: o.index,
       name: o.name,
     }));
@@ -302,8 +234,7 @@ export class TreeStore {
       const raw = utils.ReadTextFile(this.storagePath);
       utils.WriteTextFile(`${this.storagePath}.bak`, raw, true);
     } catch {
-      // Best-effort only - if we can't back it up, we still proceed with
-      // an empty document rather than blocking startup.
+      // Best-effort only
     }
   }
 }
