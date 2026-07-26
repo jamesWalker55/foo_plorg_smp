@@ -74,6 +74,10 @@ export const VK = {
   RIGHT: 0x27,
   DOWN: 0x28,
   SPACEBAR: 0x20,
+  /** Not in Flags.js's curated "Used with utils.IsKeyPressed()" list, but
+   *  a standard, unchanging Win32 virtual-key code (same platform
+   *  constant used everywhere) - safe to hardcode. */
+  F2: 0x71,
 } as const;
 
 /** GdiGraphics#GdiDrawText format argument, combine with bitwise OR. */

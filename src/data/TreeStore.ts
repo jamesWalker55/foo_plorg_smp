@@ -12,6 +12,15 @@ import {
 const STORAGE_RELATIVE_PATH = 'configuration\\foo_plorg_smp.json';
 const SAVE_DEBOUNCE_MS = 500;
 
+/** Snapshot of plman's current playlist names, indexed by playlist index. */
+export function getCurrentPlaylistNames(): string[] {
+  const names: string[] = [];
+  for (let i = 0; i < plman.PlaylistCount; i++) {
+    names.push(plman.GetPlaylistName(i));
+  }
+  return names;
+}
+
 export interface ReconcileResult {
   document: TreeDocument;
   /** Nodes whose index was still in range, but whose live name no longer
@@ -210,6 +219,45 @@ export class TreeStore {
     }
 
     return { document: this.document, renamed, removed, addedOrphans };
+  }
+
+  /**
+   * Renames a folder by id. Trims whitespace; rejects (returns false,
+   * no mutation) an empty/whitespace-only result.
+   *
+   * Deliberately does NOT check for name collisions among siblings.
+   * Unlike the old name-keyed playlist design, folders are identified by
+   * `id` - a duplicate folder name is cosmetically confusing at worst,
+   * never a correctness problem, so there's nothing to actually resolve.
+   * Same reasoning as dropping playlist reorder self-healing: don't add
+   * resolution logic the identity model doesn't actually need.
+   */
+  renameFolder(id: string, newName: string): boolean {
+    const trimmed = newName.trim();
+    if (trimmed === '') {
+      return false;
+    }
+
+    const walk = (nodes: TreeNode[]): boolean => {
+      for (const node of nodes) {
+        if (isFolderNode(node)) {
+          if (node.id === id) {
+            node.name = trimmed;
+            return true;
+          }
+          if (walk(node.children)) {
+            return true;
+          }
+        }
+      }
+      return false;
+    };
+
+    const found = walk(this.document.nodes);
+    if (found) {
+      this.scheduleSave();
+    }
+    return found;
   }
 
   /**

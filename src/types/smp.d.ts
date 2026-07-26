@@ -74,6 +74,15 @@ declare const utils: {
 
   /** True if the given virtual-key is currently held down. See types/flags.ts VK. */
   IsKeyPressed(vkey: number): boolean;
+
+  /**
+   * Native modal text-input dialog. Blocks until dismissed. If
+   * `error_on_cancel` is false (the default), Cancel/Esc/close returns
+   * `default_val` unchanged - which conveniently means "user cancelled"
+   * and "user submitted the same text" don't need to be told apart for
+   * our purposes (see TreeView's rename handling: both are a no-op).
+   */
+  InputBox(windowId: number, prompt: string, caption: string, defaultVal?: string, errorOnCancel?: boolean): string;
 };
 
 // ---------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-import { TreeStore } from '../data/TreeStore';
+import { TreeStore, getCurrentPlaylistNames } from '../data/TreeStore';
 import { isFolderNode, isPlaylistNode } from '../types/tree';
 import { flattenVisibleNodes, FlatRow } from './TreeLayout';
 import { resolveTheme, Theme } from './Theme';
@@ -217,6 +217,9 @@ export class TreeView {
       case VK.RETURN:
         this.handleActivateFocused(rows);
         return;
+      case VK.F2:
+        this.handleRenameFocused(rows);
+        return;
       default:
         return;
     }
@@ -268,6 +271,40 @@ export class TreeView {
       activatePlaylist(focused.node.index);
     } else if (isFolderNode(focused.node)) {
       this.treeStore.setFolderExpanded(focused.node.id, !focused.node.expanded);
+    }
+  }
+
+  /**
+   * F2 rename. Mirrors Explorer: disabled outright when more than one
+   * row is selected, rather than guessing which one the user meant.
+   * Uses utils.InputBox (native modal dialog) rather than a hand-rolled
+   * inline edit box - see README "Inline rename" for why.
+   */
+  private handleRenameFocused(rows: FlatRow[]): void {
+    if (this.selection.getSelectedIds().size > 1) {
+      return;
+    }
+    const focused = this.getFocusedRow(rows);
+    if (!focused) return;
+
+    if (isFolderNode(focused.node)) {
+      const newName = utils.InputBox(0, 'Folder name:', 'Rename folder', focused.node.name);
+      if (newName !== focused.node.name) {
+        this.treeStore.renameFolder(focused.node.id, newName);
+      }
+    } else if (isPlaylistNode(focused.node)) {
+      const newName = utils.InputBox(0, 'Playlist name:', 'Rename playlist', focused.node.name);
+      if (newName !== focused.node.name && newName.trim() !== '') {
+        const ok = plman.RenamePlaylist(focused.node.index, newName);
+        if (!ok) {
+          console.log(`foo_plorg_smp: plman.RenamePlaylist failed for index ${focused.node.index} (locked playlist?)`);
+        }
+        // Don't wait for the next on_playlists_changed firing - reconcile
+        // immediately so the tree reflects the rename without a visible
+        // delay. Idempotent, so it's harmless if on_playlists_changed
+        // also fires separately for the same change (it should).
+        this.treeStore.reconcile(getCurrentPlaylistNames());
+      }
     }
   }
 

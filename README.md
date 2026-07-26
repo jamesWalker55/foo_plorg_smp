@@ -4,44 +4,73 @@ A reimplementation of foobar2000 v1's `foo_plorg` (playlist organizer /
 folder tree) as a foobar2000 v2 Spider Monkey Panel script, written in
 TypeScript and bundled to a single flat JS file.
 
-## Status: Phase 3 - selection, keyboard navigation, playlist activation
+## Status: Phase 4 - inline rename (F2)
 
-Phases 1 (data layer) and 2 (static rendering) are complete and confirmed
-against a real foobar2000 + SMP install - see "Verification status"
-below. Phase 3 makes the panel respond to input for the first time.
+Phases 1-3 are complete and confirmed against a real foobar2000 + SMP
+install - see "Verification status" below. Phase 4 adds F2 rename for
+both folders and playlists.
 
-- `src/types/tree.ts` - tree document schema (folders + playlist refs).
-  Schema bumped to v3 in this phase: every node now carries a stable `id`
-  (see below for why).
+- `src/types/tree.ts` - tree document schema (folders + playlist refs),
+  schema v3 (per-node `id`, see "Why node ids")
 - `src/types/flags.ts` - numeric constants copied from the host's
-  `Flags.js` reference (colour/font type IDs, `GdiDrawText` format flags,
-  mouse-mask/`DlgCode`/virtual-key constants added this phase)
+  `Flags.js` reference, plus `VK.F2` (added this phase - not in the
+  component's curated `IsKeyPressed()` list, but a standard, unchanging
+  Win32 virtual-key code, safe to hardcode)
 - `src/data/TreeStore.ts` - load/save the JSON tree file in the foobar
-  profile (`%profile%\configuration\foo_plorg_smp.json`), plus
-  index-based reconciliation against the live playlist list - see
-  "Playlist identity" below. This phase adds `setFolderExpanded()` and
-  `findNodeById()`, and backfills missing/colliding node ids on load.
-- `src/ui/Theme.ts` - resolves the current DUI/CUI font and
-  text/background/**selection** colours (selection colours added this
-  phase), with a `gdi.Font("Segoe UI", 14)` fallback if the host font
-  lookup returns null
-- `src/ui/TreeLayout.ts` - flattens the (possibly collapsed) tree into the
-  linear row list rendering, hit-testing, and keyboard nav all work from;
-  now also records each row's parent folder (for Left-arrow-to-parent)
-- `src/ui/Selection.ts` - **new this phase.** Tracks selected node ids,
-  keyboard focus, and the shift-click/shift-arrow range anchor, keyed by
-  node id rather than row index or object reference (both are unstable
-  across a reconcile() pass - see "Why node ids" below)
-- `src/ui/TreeView.ts` - draws the visible rows (virtualized against
-  `window.Height`), highlighting selected rows; hit-tests mouse clicks
-  against rows and (for folders) a fixed-width glyph zone; handles
-  click/double-click/arrow-key/Enter input; activates a playlist via
-  `plman.ActivePlaylist` on click (if `options.activateOnSingleClick`) or
-  double-click (always)
-- `src/main.ts` - wires the above together; sets `window.DlgCode` so
-  arrow keys actually reach the panel; registers
-  `on_mouse_lbtn_down`/`on_mouse_lbtn_dblclk`/`on_key_down` in addition to
-  earlier phases' callbacks
+  profile, index-based reconciliation (see "Playlist identity" below).
+  This phase adds `renameFolder()` and exports `getCurrentPlaylistNames()`
+  as a shared helper (previously duplicated in `main.ts`, now also used
+  by `TreeView`'s playlist-rename handler)
+- `src/ui/Theme.ts` - resolves DUI/CUI font and text/background/selection
+  colours
+- `src/ui/TreeLayout.ts` - flattens the tree into the row list rendering,
+  hit-testing, and keyboard nav share
+- `src/ui/Selection.ts` - selected/focused node id tracking
+- `src/ui/TreeView.ts` - rendering, hit-testing, click/double-click/
+  keyboard input, playlist activation. This phase adds F2 rename handling
+  - see "Inline rename" below
+- `src/main.ts` - wires everything together and registers host callbacks
+
+## Inline rename: native dialog, not a hand-rolled overlay
+
+Originally planned as an edit box overlaid directly on the row. Changed
+while implementing: SMP exposes `utils.InputBox()`, a native modal text
+prompt, which gets cursor movement, text selection, clipboard, and IME
+handling for free from the OS - all things a hand-rolled overlay editor
+would have to reimplement (and get subtly wrong more than once) using
+raw `on_char`/`on_key_down` events and manual caret rendering. Given this
+project's general bias so far toward using what the host already solves
+well rather than reinventing it (see the reorder-identity decisions
+above), F2 now opens `utils.InputBox` instead. The tradeoff is a modal
+popup rather than a flush inline editor - revisit only if that turns out
+to feel wrong in practice.
+
+Behaviour:
+- F2 does nothing when more than one row is selected (mirrors Explorer -
+  renaming an arbitrary item out of a multi-select is more confusing than
+  useful).
+- **Folder rename** goes straight to `TreeStore.renameFolder()`, which
+  trims whitespace and rejects an empty result, but deliberately does
+  **not** check for name collisions among sibling folders. Folders are
+  identified by `id`, not name (see "Why node ids"), so a duplicate
+  folder name is cosmetically odd at worst, never a correctness problem -
+  same reasoning as dropping playlist-reorder self-healing: don't build
+  resolution logic the identity model doesn't actually need.
+- **Playlist rename** calls `plman.RenamePlaylist()` directly (the tree
+  only ever caches the playlist's real name for display, so renaming
+  means renaming the actual foobar playlist, not just a label in our
+  JSON), then immediately calls `reconcile()` rather than waiting for the
+  next `on_playlists_changed` firing, so the row updates without a
+  visible delay. Logs a warning if `RenamePlaylist` reports failure
+  (e.g. a locked playlist) rather than assuming success.
+- Since `InputBox`'s default behaviour returns the original value
+  unchanged on Cancel/Esc, "cancelled" and "submitted with no change"
+  collapse into the same no-op check - no try/catch needed.
+
+`activateOnSingleClick` still has no settings UI (JSON-only) - didn't get
+to it this phase in favour of rename; still on the list for whenever
+Phase 6 (context menu/commands) happens, since that's naturally where a
+"Settings" entry would live too.
 
 ## Why node ids (schema v3)
 
@@ -151,6 +180,12 @@ menu > Edit Script, or point the panel at the file directly).
       renders correctly once content exceeds one screen, and resizing the
       panel correctly re-renders both the trimmed (ellipsized) playlist
       names and the scrollbar.
+- [x] Phase 3 interaction confirmed in full: click/ctrl+click/shift+click
+      selection, arrow-key navigation (including that `DefineScript`'s
+      `features.grab_focus: true` alone was sufficient - no separate
+      Configure-dialog toggle needed), glyph-zone and double-click folder
+      expand/collapse, Enter/double-click playlist activation, and
+      scroll-into-view on navigation.
 
 **Known benign quirk:** the full startup sequence logs twice the first
 time a script edit is applied via the panel's Edit Script dialog. This is
@@ -166,70 +201,44 @@ playlist names, the latter producing no detectable change at all (see
 "Playlist identity" above). This is why the design assumption is that
 playlist management happens exclusively through this panel.
 
-## Phase 3 verification checklist (needs a real foobar2000 + SMP install -
+## Phase 4 verification checklist (needs a real foobar2000 + SMP install -
 unconfirmed as of this build)
 
-- [ ] Click a row - it highlights with the selection colours, and nothing
-      else changes selection state.
-- [ ] Ctrl+click a second row - both rows now selected; ctrl+click one of
-      them again to deselect just that one.
-- [ ] Shift+click a third row - selects the contiguous visible range from
-      the first-clicked row through the shift-clicked one, replacing the
-      prior selection.
-- [ ] Up/Down arrow keys move a single-row selection. **Requires "Grab
-      focus" - if arrow keys do nothing, check the panel's Configure
-      dialog for a "Grab focus" option separate from the
-      `features.grab_focus` passed to `DefineScript`; the Callbacks.js
-      docs reference such a setting and it's unconfirmed whether
-      `DefineScript`'s option alone satisfies it.**
-- [ ] Shift+Up/Shift+Down extends the range from the last plain
-      click/arrow-move, same as shift-click.
-- [ ] Home/End jump to the first/last visible row; PageUp/PageDown jump by
-      roughly one screen.
-- [ ] Clicking directly on a folder's `▾`/`▸` glyph toggles it without
-      needing a double-click. The hit zone is a fixed-width approximation
-      (see `GLYPH_HIT_WIDTH_PX` in `TreeView.ts`) since mouse callbacks
-      don't receive a `GdiGraphics` to measure the actual glyph width -
-      confirm it doesn't feel obviously mis-sized at your font/DPI.
-- [ ] Double-clicking anywhere else on a folder row also toggles it.
-- [ ] Right arrow on a collapsed folder expands it; on an already-expanded
-      folder with children, moves focus to the first child. Left arrow on
-      an expanded folder collapses it; otherwise moves focus to the
-      parent folder (no-op at the root).
-- [ ] Enter on a focused playlist row switches foobar's active playlist
-      (`plman.ActivePlaylist`); Enter on a folder toggles it, matching
-      double-click.
-- [ ] Double-click on a playlist row always switches the active playlist,
-      regardless of the (currently JSON-only, no UI yet) 
-      `activateOnSingleClick` option.
-- [ ] After any of the above, scroll position auto-adjusts to keep the
-      focused/clicked row visible when it was near the top/bottom edge.
+- [ ] F2 on a focused folder opens a native input dialog pre-filled with
+      its current name; submitting a new name updates the tree and
+      persists; Cancel/Esc/submitting the same name leaves it untouched.
+- [ ] F2 on a focused playlist opens the same dialog; submitting a new
+      name actually renames the real foobar playlist (check it in the
+      main UI's playlist tabs, not just this panel) and the tree row
+      updates immediately, without waiting for a second interaction.
+- [ ] F2 with multiple rows selected does nothing (select 2+ rows, press
+      F2, confirm no dialog appears).
+- [ ] Renaming a locked playlist (if you have one, or lock one via the
+      main UI first) logs a `plman.RenamePlaylist failed` message to the
+      console instead of silently doing nothing or throwing.
+- [ ] Two sibling folders with the same name after a rename - confirm
+      this is merely cosmetically odd (both still work independently,
+      selection/expand/rename on either one only affects that one) rather
+      than causing any actual confusion in the tree's behaviour.
 
 ## Known limitations (by design, for this phase)
 
 - Playlist identity and reorder self-healing have real limits with
   duplicate names combined with simultaneous renames - see "Playlist
   identity" above for the full explanation.
-- No drag-and-drop, no context menu, no folder creation UI, no F2 rename
-  yet - the tree can currently only grow folders by hand-editing the JSON
-  file, and selection doesn't yet do anything besides highlight + (for
-  playlists) activation. That's Phases 4-6.
+- No drag-and-drop, no context menu, no folder/playlist creation UI yet -
+  the tree can currently only grow folders by hand-editing the JSON file.
+  That's Phases 5-6.
 - The folder glyph click-zone is a fixed pixel width, not measured
-  against the actual rendered glyph - see the Phase 3 checklist above.
+  against the actual rendered glyph.
 - Colours/fonts are read once at startup - `on_colours_changed` and
-  `on_font_changed` aren't wired up yet, so live theme changes in
-  DUI/CUI preferences won't be reflected until the panel reloads.
-- Selection is cleared implicitly whenever a selected/focused node is
-  dropped by `reconcile()` (via `pruneSelection()`), with no attempt to
-  carry it over - e.g. selecting a playlist then renaming it externally
-  keeps the selection (index unchanged), but selecting one that then gets
-  removed externally will silently clear just that entry from the
-  selection, not the whole thing.
+  `on_font_changed` aren't wired up yet.
+- `activateOnSingleClick` has no settings UI yet (JSON-only).
+- Rename uses a native modal dialog, not an inline overlay editor - see
+  "Inline rename" above for why, and revisit if it feels wrong in use.
 
-## Next: Phase 4
+## Next: Phase 5
 
-Inline rename: F2 opens an edit box overlaid on the focused row, Enter
-commits, Escape cancels, and folder-name collisions among siblings get
-handled. This is also naturally where `activateOnSingleClick` gets an
-actual settings UI, rather than only being editable by hand in the JSON
-file.
+Drag-and-drop: reordering/moving nodes within the tree first, then
+dropping tracks onto a playlist row, then (lower priority) dragging
+playlist files in from Explorer.

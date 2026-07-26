@@ -1,11 +1,11 @@
-import { TreeStore, ReconcileResult } from './data/TreeStore';
+import { TreeStore, ReconcileResult, getCurrentPlaylistNames } from './data/TreeStore';
 import { TreeView } from './ui/TreeView';
 import { isFolderNode, isPlaylistNode, TreeNode } from './types/tree';
 import { DLGC } from './types/flags';
 
 window.DefineScript('foo_plorg_smp', {
   author: 'you',
-  version: '0.3.0-phase3-selection-nav',
+  version: '0.4.0-phase4-inline-rename',
   features: { drag_n_drop: true, grab_focus: true },
 });
 
@@ -27,14 +27,6 @@ const treeStore = new TreeStore();
 // Created in initialize(), after reconciliation - there's no reason to
 // build the view before the data it renders is ready.
 let treeView: TreeView | undefined;
-
-function currentPlaylistNames(): string[] {
-  const names: string[] = [];
-  for (let i = 0; i < plman.PlaylistCount; i++) {
-    names.push(plman.GetPlaylistName(i));
-  }
-  return names;
-}
 
 function logReconcileResult(result: ReconcileResult): void {
   if (result.renamed.length > 0) {
@@ -62,7 +54,7 @@ function logTree(nodes: TreeNode[], depth = 0): void {
 
 function initialize(): void {
   treeStore.load();
-  logReconcileResult(treeStore.reconcile(currentPlaylistNames()));
+  logReconcileResult(treeStore.reconcile(getCurrentPlaylistNames()));
 
   console.log('foo_plorg_smp: tree after startup reconciliation:');
   logTree(treeStore.getDocument().nodes);
@@ -85,7 +77,7 @@ function initialize(): void {
 // ---------------------------------------------------------------------------
 
 function on_playlists_changed(): void {
-  logReconcileResult(treeStore.reconcile(currentPlaylistNames()));
+  logReconcileResult(treeStore.reconcile(getCurrentPlaylistNames()));
   treeView?.pruneSelection();
   window.Repaint();
 }
