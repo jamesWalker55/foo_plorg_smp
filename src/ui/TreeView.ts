@@ -28,12 +28,6 @@ const DISCLOSURE_HIT_WIDTH_PX = 16;
  *  Windows default and feels right for a tree. */
 const WHEEL_LINES_PER_NOTCH = 3;
 
-/** How many rows Ctrl+A is allowed to select in one go - a sanity
- *  guard, not a real limit; the only point of it is to avoid runaway
- *  loops if some future code path ends up calling selectAll with a
- *  bogus count. */
-const CTRL_A_MAX = 100000;
-
 // Plain-text disclosure indicators, since icons are out of scope for now
 // (see project decisions - plain text, clean indent, no icons/connector
 // lines). Revisit if/when Phase 7 (colour/state polish) adds real icons.
@@ -322,15 +316,9 @@ export class TreeView {
     }
 
     const isShift = (mask & KeyMask.SHIFT) !== 0;
-    const isCtrl = (mask & KeyMask.CONTROL) !== 0;
 
-    // Ctrl+A: select all - independent of the rest of the nav logic
-    // because it has no "from" cursor. Esc clears, Enter activates.
-    if (isCtrl && vkey === 0x41 /* 'A' */) {
-      this.selection.selectAll(Math.min(totalRows, CTRL_A_MAX));
-      window.Repaint();
-      return;
-    }
+    // Note: Ctrl+A select-all is intentionally not bound - per the
+    // owner's preference, the panel doesn't grab that shortcut.
 
     if (vkey === VK.ESCAPE) {
       if (!this.selection.isEmpty()) {

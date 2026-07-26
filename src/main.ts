@@ -5,7 +5,7 @@ import { isFolderNode, isPlaylistNode, TreeNode } from './types/tree';
 
 window.DefineScript('foo_plorg_smp', {
   author: 'you',
-  version: '0.3.0-phase3-selection',
+  version: '0.3.1-phase3-no-ctrl-a',
   features: { drag_n_drop: true, grab_focus: true },
 });
 

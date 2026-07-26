@@ -210,8 +210,6 @@ verification against a real foobar2000 + SMP install:
       notch, with `clampScrollOffset` keeping the offset inside
       `[0, totalContentHeight - viewportHeight]`.
 - [ ] Esc clears the selection.
-- [ ] Ctrl+A selects all rows (capped at `CTRL_A_MAX`, currently
-      100k - effectively unbounded).
 - [ ] `on_playlists_changed` (add / remove / rename via another
       panel) clears the current selection and repaints, so a row
       that no longer exists can't stay "selected" pointing at
