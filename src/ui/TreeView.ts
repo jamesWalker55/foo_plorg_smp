@@ -466,17 +466,23 @@ export class TreeView {
         return;
       }
     } else if (isPlaylistNode(row.node)) {
-      // plman.RenamePlaylist returns false on either a name collision
-      // with another playlist or a 'RenamePlaylist' lock on this
-      // playlist. The error popup is deliberately generic; in practice
-      // collisions are the overwhelmingly likely cause.
+      // plman.RenamePlaylist returns false only if the playlist is
+      // locked against renaming (or the index is out of range).
+      // foobar2000 allows duplicate playlist names, so a name
+      // collision is NOT a failure case.
       const ok = plman.RenamePlaylist(row.node.index, newName);
       if (!ok) {
         fb.ShowPopupMessage(
-          'Rename failed. A playlist with that name may already exist, or this playlist may be locked for rename.'
+          'Rename failed. This playlist may be locked against renaming.'
         );
         return;
       }
+      // Optimistically update the cached name so the tree shows the
+      // new name immediately. on_playlists_changed will fire
+      // asynchronously and reconcile, but this avoids a brief flicker
+      // of the old name between the rename and the callback.
+      row.node.name = newName;
+      this.treeStore.scheduleSave();
     }
 
     window.Repaint();

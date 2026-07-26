@@ -103,6 +103,12 @@ export class TreeStore {
 
   /** Immediate, synchronous write - use on panel/script unload. */
   saveNow(): void {
+    // Cancel any pending debounced save so it doesn't fire after this
+    // synchronous write (e.g., during on_script_unload).
+    if (this.saveTimer !== null) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = null;
+    }
     try {
       const json = JSON.stringify(this.document, null, 2);
       const ok = utils.WriteTextFile(this.storagePath, json, true);

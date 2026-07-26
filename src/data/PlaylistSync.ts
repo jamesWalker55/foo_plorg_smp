@@ -31,47 +31,60 @@ function countByName(names: string[]): Map<string, number> {
 /**
  * Diffs two ordered playlist-name snapshots.
  *
- * Rename detection is a heuristic, not a guarantee - SMP gives us no
- * stable playlist id, only a name and an index, via a single callback
- * that fires for add/remove/reorder/rename alike. The heuristic used
- * here: if both snapshots have the same length, and index i has a
- * different name in each, and that old name doesn't survive elsewhere
- * in `curr` while the new name didn't already exist somewhere in `prev`,
- * treat it as a rename of the playlist at index i rather than an
- * unrelated add+remove pair.
+ * Rename detection heuristic: if both snapshots have the same length, and
+ * index i has a different name in each, and the old name doesn't survive
+ * anywhere in `curr`, treat it as a rename of the playlist at index i.
  *
- * This covers the common case (renaming one playlist via F2 in the main
- * UI or another panel) correctly. A rename performed in the same host
- * operation as an add/remove elsewhere in the list may instead surface
- * as a plain remove+add - acceptable for v1, revisit only if it proves
- * disruptive in practice.
+ * We deliberately do NOT check whether the new name already existed in
+ * `prev`. foobar2000 allows duplicate playlist names, and
+ * plman.RenamePlaylist succeeds in that case — so a rename-to-duplicate
+ * must be detected and patched before reconcile runs, or the node would
+ * be dropped (old name gone) and re-imported as an orphan at the bottom.
+ *
+ * The add/remove consume logic uses index-based tracking (not name-based
+ * set filtering) to avoid double-counting names that appear at both the
+ * renamed index and elsewhere in the list.
  */
 export function diffPlaylistNames(prev: string[], curr: string[]): PlaylistDiff {
   const renamed: PlaylistDiff['renamed'] = [];
+  const claimedPrev = new Set<number>();
+  const claimedCurr = new Set<number>();
 
   if (prev.length === curr.length) {
-    const prevCounts = countByName(prev);
     const currCounts = countByName(curr);
-
     for (let i = 0; i < prev.length; i++) {
       const oldName = prev[i]!;
       const newName = curr[i]!;
       if (oldName === newName) {
+        claimedPrev.add(i);
+        claimedCurr.add(i);
         continue;
       }
       const oldNameStillExists = (currCounts.get(oldName) ?? 0) > 0;
-      const newNameAlreadyExisted = (prevCounts.get(newName) ?? 0) > 0;
-      if (!oldNameStillExists && !newNameAlreadyExisted) {
+      if (!oldNameStillExists) {
         renamed.push({ index: i, oldName, newName });
+        claimedPrev.add(i);
+        claimedCurr.add(i);
       }
     }
   }
 
-  const renamedOldNames = new Set(renamed.map((r) => r.oldName));
-  const renamedNewNames = new Set(renamed.map((r) => r.newName));
-
-  const currRemaining = [...curr].filter((n) => !renamedNewNames.has(n));
-  const prevRemaining = [...prev].filter((n) => !renamedOldNames.has(n));
+  // Build remaining name lists from unclaimed indices only.
+  // This is the critical fix: the old code used name-based set filtering
+  // (renamedNewNames), which incorrectly removed ALL occurrences of a
+  // name from currRemaining when only one was the rename target.
+  const unclaimedPrevNames: string[] = [];
+  for (let i = 0; i < prev.length; i++) {
+    if (!claimedPrev.has(i)) {
+      unclaimedPrevNames.push(prev[i]!);
+    }
+  }
+  const unclaimedCurrNames: string[] = [];
+  for (let i = 0; i < curr.length; i++) {
+    if (!claimedCurr.has(i)) {
+      unclaimedCurrNames.push(curr[i]!);
+    }
+  }
 
   const consume = (list: string[], name: string): boolean => {
     const idx = list.indexOf(name);
@@ -81,12 +94,12 @@ export function diffPlaylistNames(prev: string[], curr: string[]): PlaylistDiff 
   };
 
   const added: string[] = [];
-  for (const name of currRemaining) {
-    if (!consume(prevRemaining, name)) {
+  for (const name of unclaimedCurrNames) {
+    if (!consume(unclaimedPrevNames, name)) {
       added.push(name);
     }
   }
-  const removed = prevRemaining;
+  const removed = unclaimedPrevNames;
 
   const reordered =
     renamed.length === 0 &&

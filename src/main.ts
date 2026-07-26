@@ -73,7 +73,6 @@ function initialize(): void {
 
 function on_playlists_changed(): void {
   const { diff, reconcile } = playlistSync.onPlaylistsChanged();
-
   if (diff.renamed.length > 0) {
     console.log(`foo_plorg_smp: renamed ${diff.renamed.map((r) => `"${r.oldName}" -> "${r.newName}"`).join(', ')}`);
   }
@@ -86,17 +85,17 @@ function on_playlists_changed(): void {
   if (reconcile.addedOrphans.length > 0) {
     console.log(`foo_plorg_smp: imported ${reconcile.addedOrphans.length} playlist(s) not yet in the tree: ${reconcile.addedOrphans.map((o) => `[${o.index}] ${o.name}`).join(', ')}`);
   }
-
-  // Selection is expressed in flat-row indices, which depend on the
-  // current tree. After reconcile() has mutated the tree (dropping
-  // unresolved nodes, adding orphans, etc.) the indices we cached may
-  // point at the wrong row. We don't bother remapping the selection
-  // intelligently here - clearing it on structural change is simpler
-  // and matches the "user manages playlists through this script"
-  // assumption: structural changes imply something happened elsewhere,
-  // and keeping a now-meaningless selection is just confusing.
-  treeView?.getSelection().clear();
-
+  // Only clear the selection when the tree structure actually changes
+  // (nodes moved, dropped, or added). Pure renames don't change
+  // flat-row indices, so the selection remains valid and the user
+  // can immediately perform another action on the renamed row.
+  const structuralChange =
+    reconcile.relocated.length > 0 ||
+    reconcile.unresolved.length > 0 ||
+    reconcile.addedOrphans.length > 0;
+  if (structuralChange) {
+    treeView?.getSelection().clear();
+  }
   window.Repaint();
 }
 
