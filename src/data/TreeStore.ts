@@ -1,6 +1,7 @@
 import {
   TreeDocument,
   TreeNode,
+  FolderNode,
   PlaylistNode,
   TREE_SCHEMA_VERSION,
   createEmptyDocument,
@@ -111,6 +112,46 @@ export class TreeStore {
     } catch (err) {
       console.log(`foo_plorg_smp: failed to save tree file. Reason: ${String(err)}`);
     }
+  }
+
+  /**
+   * Renames a folder in-place after enforcing sibling-uniqueness.
+   * Returns a structured result so the caller can show a precise
+   * popup message without re-deriving the reason.
+   *
+   * Why uniqueness is checked at the tree level (and not via a plman
+   * call, the way playlists are): folders are a UI-only construct with
+   * no foobar2000-side identity, so there's no external authority to
+   * defer to. Two identically-named folders under the same parent
+   * would just be confusing in any later list view, so we forbid it.
+   * Case-sensitive match, matching Windows Explorer.
+   *
+   * Playlists intentionally do NOT route through here - the caller is
+   * expected to use plman.RenamePlaylist directly, since that's where
+   * the canonical name lives and where the rename takes effect.
+   */
+  renameFolder(
+    folder: FolderNode,
+    newName: string,
+    siblings: TreeNode[]
+  ): { ok: boolean; reason?: string } {
+    if (newName.length === 0) {
+      return { ok: false, reason: 'Name cannot be empty.' };
+    }
+    if (newName === folder.name) {
+      return { ok: true };
+    }
+    for (const sibling of siblings) {
+      if (sibling !== folder && isFolderNode(sibling) && sibling.name === newName) {
+        return {
+          ok: false,
+          reason: `A folder named "${newName}" already exists here.`,
+        };
+      }
+    }
+    folder.name = newName;
+    this.scheduleSave();
+    return { ok: true };
   }
 
   /**

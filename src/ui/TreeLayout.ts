@@ -3,6 +3,21 @@ import { TreeNode, isFolderNode } from '../types/tree';
 export interface FlatRow {
   node: TreeNode;
   depth: number;
+  /**
+   * The siblings array that contains this row - i.e. the array from
+   * which `node` was read. `parent` IS the array, not a folder wrapper
+   * around it, so `parent.indexOf(row.node)` gives the row's position
+   * in the array and iterating `parent` gives the row's siblings.
+   *
+   * Top-level rows have `parent === rootNodes` (the document's
+   * top-level array). Folders are not parents themselves; their
+   * children live in a separate array, which is the `parent` of any
+   * row that nests inside them.
+   *
+   * Used by rename (Phase 4) to check for sibling-name collisions
+   * without having to walk the whole document.
+   */
+  parent: TreeNode[];
 }
 
 /**
@@ -10,13 +25,21 @@ export interface FlatRow {
  * were fully unrolled (i.e. respecting `expanded: false` on folders by
  * omitting their children). This is the same list virtualization slices
  * into a viewport window - see TreeView.
+ *
+ * `parent` is the array from which each row was read (see FlatRow).
+ * Root callers pass the document's top-level node array; recursive
+ * calls pass each folder's `children` array.
  */
-export function flattenVisibleNodes(nodes: TreeNode[], depth = 0): FlatRow[] {
+export function flattenVisibleNodes(
+  nodes: TreeNode[],
+  depth = 0,
+  parent: TreeNode[] = nodes
+): FlatRow[] {
   const rows: FlatRow[] = [];
   for (const node of nodes) {
-    rows.push({ node, depth });
+    rows.push({ node, depth, parent });
     if (isFolderNode(node) && node.expanded) {
-      rows.push(...flattenVisibleNodes(node.children, depth + 1));
+      rows.push(...flattenVisibleNodes(node.children, depth + 1, node.children));
     }
   }
   return rows;

@@ -4,13 +4,27 @@ A reimplementation of foobar2000 v1's `foo_plorg` (playlist organizer /
 folder tree) as a foobar2000 v2 Spider Monkey Panel script, written in
 TypeScript and bundled to a single flat JS file.
 
-## Status: Phase 3 - selection & keyboard navigation
+## Status: Phase 4 - inline rename (F2)
 
 Phases 1, 2, and 3 are complete. Phases 1 and 2 are confirmed against a
-real foobar2000 + SMP install - see "Verification status" below. Phase 3
-adds the first layer of input: click / ctrl+click / shift+click
-selection, arrow-key navigation, disclosure-triangle expand/collapse,
-mouse-wheel scrolling, and a visible selection / active-playlist frame.
+real foobar2000 + SMP install - see "Verification status" below. Phase 4
+adds F2-driven rename for both folders and playlists.
+
+- Folders: renamed in-tree, with sibling-uniqueness enforced (case-
+  sensitive, matching Windows Explorer). `scheduleSave()` persists the
+  change.
+- Playlists: routed through `plman.RenamePlaylist` (returns false on
+  collision or a `RenamePlaylist` lock, which we surface as a generic
+  popup).
+- Input: SMP's modal `utils.InputBox` (try/catch on
+  `errorOnCancel = true` for clean cancel detection).
+
+The choice of `utils.InputBox` over a hand-rolled in-place editor is
+deliberate - foo_plorg's original F2 was in-place, but `InputBox` is
+~10 lines vs ~300 for a custom one, and matches this project's
+pragmatic-shipping-over-polish bias. If a later polish phase wants
+true inline rename, `onRenameRequested()` is the single method to
+swap.
 
 ### What's in the box
 
@@ -47,8 +61,9 @@ mouse-wheel scrolling, and a visible selection / active-playlist frame.
   against `window.Height`), clean indentation (no connector lines),
   plain-text folder disclosure markers (`▾` / `▸` - no icons, per
   current UX decisions), selection-background + active-playlist frame,
-  mouse-wheel scroll, and the input dispatch (click / dblclick / wheel
-  / key) wired to the selection and tree mutations
+  mouse-wheel scroll, the input dispatch (click / dblclick / wheel /
+  key) wired to selection and tree mutations, and the F2 rename
+  handler (`onRenameRequested`)
 - `src/main.ts` - wires the above together; registers every SMP
   callback this phase needs (`on_paint`, `on_size`, `on_playlists_changed`,
   `on_playlist_switch`, `on_script_unload`, `on_mouse_lbtn_down`,
@@ -215,6 +230,45 @@ verification against a real foobar2000 + SMP install:
       that no longer exists can't stay "selected" pointing at
       nothing.
 
+### Phase 4 - inline rename (F2)
+
+Phase 4 is built and typechecks; the following still needs
+verification against a real foobar2000 + SMP install:
+
+- [ ] F2 on a single selected playlist row opens a modal input
+      dialog titled "Rename" with the prompt "New playlist name:"
+      and the current name pre-filled. Confirming with a new name
+      renames the playlist in foobar2000 (visible in the main
+      playlist tabs and in any other panel that lists playlists).
+      The tree repaints with the new name.
+- [ ] F2 on a single selected folder row opens the same dialog with
+      the prompt "New folder name:". Confirming renames the folder
+      in the tree and the change is persisted to
+      `foo_plorg_smp.json`.
+- [ ] Pressing Cancel in the dialog leaves the row name unchanged
+      (try/catch on `errorOnCancel = true` handles this).
+- [ ] F2 on an empty selection is a silent no-op. F2 on a multi-row
+      selection shows a popup: "Select a single item to rename."
+- [ ] Renaming a folder to a name that already exists as a sibling
+      folder shows a popup: `A folder named "<x>" already exists
+      here.` and leaves both folders unchanged. Case-sensitive
+      match.
+- [ ] Renaming a playlist to a name that already exists elsewhere
+      in plman (regardless of whether that other playlist is in our
+      tree) shows a popup: "Rename failed. A playlist with that
+      name may already exist, or this playlist may be locked for
+      rename." `plman.RenamePlaylist` returns false; we surface it
+      generically.
+- [ ] F2 on a playlist, type empty string, press OK: shows
+      "Name cannot be empty." and the playlist name is unchanged.
+- [ ] F2 on a playlist, press OK without changing anything (or
+      re-type the same name): silent no-op (no popup, no log, no
+      write).
+- [ ] Rename persists across a foobar2000 restart. For folders this
+      is direct (we write the tree file). For playlists it's via
+      foobar2000's own persistence - the tree's cached name gets
+      re-aligned by `on_playlists_changed` on next start.
+
 ## Known limitations (by design, for this phase)
 
 - Playlist identity and reorder self-healing have real limits with
@@ -239,8 +293,9 @@ verification against a real foobar2000 + SMP install:
   touching the selection) so SMP's default behaviour applies
   cleanly until Phase 6 builds the real context menu.
 
-## Next: Phase 4
+## Next: Phase 5
 
-Inline rename via F2: edit box overlaid on the selected row's label,
-commit on Enter, cancel on Escape, name-collision detection against
-sibling folder names + plman playlist names.
+Drag & drop: internal reorder / move first (playlists and folders
+within the tree), then track-drop-onto-playlist (add items to a
+playlist, with Ctrl = copy per legacy behaviour), then Explorer file
+drop (create new playlists from files / import `.m3u8` etc).

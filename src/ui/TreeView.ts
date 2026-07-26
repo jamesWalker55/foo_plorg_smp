@@ -10,7 +10,7 @@ import {
 } from './TreeLayout';
 import { Selection } from './Selection';
 import { resolveTheme, Theme } from './Theme';
-import { DT, MouseMask, KeyMask, VK } from '../types/flags';
+import { DT, KeyMask, MouseMask, VK } from '../types/flags';
 
 const ROW_VERTICAL_PADDING = 6;
 const INDENT_PX = 16;
@@ -333,6 +333,11 @@ export class TreeView {
       return;
     }
 
+    if (vkey === VK.F2) {
+      this.onRenameRequested();
+      return;
+    }
+
     const currentAnchor = this.selection.getAnchor();
     const cursor: number = currentAnchor !== null
       ? currentAnchor
@@ -399,6 +404,82 @@ export class TreeView {
         return;
       }
     }
+  }
+
+  /**
+   * Prompts the user for a new name and applies it. Triggered by F2 on
+   * a single-row selection; ignored for empty or multi-row selections
+   * (with a popup for multi, since the user clearly tried to do
+   * something and we should tell them why nothing happened).
+   *
+   * Folders go through `TreeStore.renameFolder` (sibling-uniqueness
+   * enforced there). Playlists go through `plman.RenamePlaylist`
+   * directly - that's the canonical authority, and the tree's cached
+   * name gets updated by `PlaylistSync` when the resulting
+   * `on_playlists_changed` fires.
+   *
+   * Uses SMP's modal `utils.InputBox`. Cancel detection is via
+   * try/catch with `errorOnCancel = true` so we can distinguish
+   * "user cancelled" from "user typed nothing and clicked OK" (which
+   * we treat as a silent no-op since the empty-name check would
+   * otherwise spam them with a popup every time they hit Enter on a
+   * blank field).
+   */
+  onRenameRequested(): void {
+    if (this.selection.getSize() === 0) {
+      return;
+    }
+    if (this.selection.getSize() > 1) {
+      fb.ShowPopupMessage('Select a single item to rename.');
+      return;
+    }
+
+    const rowIndex = this.selection.getAnchor();
+    if (rowIndex === null) return;
+    const row = this.lastFlattened[rowIndex];
+    if (!row) return;
+
+    const prompt = isFolderNode(row.node)
+      ? 'New folder name:'
+      : 'New playlist name:';
+
+    let raw: string;
+    try {
+      raw = utils.InputBox(window.ID, prompt, 'Rename', row.node.name, true);
+    } catch {
+      return; // user cancelled
+    }
+
+    const newName = raw.trim();
+    if (newName === '') {
+      fb.ShowPopupMessage('Name cannot be empty.');
+      return;
+    }
+    if (newName === row.node.name) {
+      return; // no change
+    }
+
+    if (isFolderNode(row.node)) {
+      const result = this.treeStore.renameFolder(row.node, newName, row.parent);
+      if (!result.ok) {
+        fb.ShowPopupMessage(result.reason ?? 'Rename failed.');
+        return;
+      }
+    } else if (isPlaylistNode(row.node)) {
+      // plman.RenamePlaylist returns false on either a name collision
+      // with another playlist or a 'RenamePlaylist' lock on this
+      // playlist. The error popup is deliberately generic; in practice
+      // collisions are the overwhelmingly likely cause.
+      const ok = plman.RenamePlaylist(row.node.index, newName);
+      if (!ok) {
+        fb.ShowPopupMessage(
+          'Rename failed. A playlist with that name may already exist, or this playlist may be locked for rename.'
+        );
+        return;
+      }
+    }
+
+    window.Repaint();
   }
 
   /**

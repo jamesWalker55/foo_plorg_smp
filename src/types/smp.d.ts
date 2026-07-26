@@ -23,6 +23,10 @@ declare const fb: {
   /** foobar2000 version string, e.g. "2.1.2". */
   readonly Version: string;
   readonly ComponentPath: string;
+
+  /** Modal popup with a single OK button. Use for "you can't do that"
+   *  style messages, not for any flow that should be unobtrusive. */
+  ShowPopupMessage(message: string): void;
 };
 
 // ---------------------------------------------------------------------------
@@ -71,6 +75,28 @@ declare const utils: {
   FileExists(path: string): boolean;
   IsDirectory(path: string): boolean;
   IsFile(path: string): boolean;
+
+  /**
+   * Modal single-line text input dialog backed by a native Windows Edit
+   * control. The dialog auto-resizes to fit long input strings.
+   *
+   * With `errorOnCancel = true`, throws when the user clicks Cancel
+   * (or closes the dialog with the X), so the caller can distinguish
+   * "cancelled" from "entered the empty string" via try/catch. With
+   * `errorOnCancel = false` (the default) both cases return the empty
+   * string, which is rarely what you want.
+   *
+   * `windowId` is the panel this dialog is parented to. SMP's docs use
+   * `0` in the example; we pass `window.ID` so it follows whichever
+   * panel instance is calling.
+   */
+  InputBox(
+    windowId: number,
+    prompt: string,
+    caption: string,
+    defaultValue?: string,
+    errorOnCancel?: boolean
+  ): string;
 };
 
 // ---------------------------------------------------------------------------
@@ -128,6 +154,8 @@ declare const window: {
   readonly Height: number;
   /** 0 = Columns UI, 1 = Default UI - determines which GetColourXXX/GetFontXXX pair to call. */
   readonly InstanceType: 0 | 1;
+  /** Panel instance ID, used as the parent for modal dialogs like utils.InputBox. */
+  readonly ID: number;
 
   Repaint(force?: boolean): void;
   RepaintRect(x: number, y: number, w: number, h: number, force?: boolean): void;
