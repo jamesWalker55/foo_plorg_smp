@@ -53,6 +53,10 @@ declare const plman: {
   GetPlaylistLockName(playlistIndex: number): string | null;
 
   UndoBackup(playlistIndex: number): void;
+
+  /** Undocumented GUID methods */
+  GetGUID(playlistIndex: number): string;
+  FindByGUID(str: string): string;
 };
 
 // ---------------------------------------------------------------------------
