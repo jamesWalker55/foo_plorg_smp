@@ -435,24 +435,23 @@ export class TreeView {
     }
 
     const newName = raw.trim();
-    if (newName === '') {
-      fb.ShowPopupMessage('Name cannot be empty.');
-      return;
-    }
     if (newName === row.node.name) {
       return; // no change
     }
 
     if (isFolderNode(row.node)) {
-      const result = this.treeStore.renameFolder(row.node, newName, row.parent);
-      if (!result.ok) {
-        fb.ShowPopupMessage(result.reason ?? 'Rename failed.');
-        return;
-      }
+      this.treeStore.renameFolder(row.node, newName);
     } else if (isPlaylistNode(row.node)) {
+      // plman enforces its own playlist-name uniqueness and may also
+      // reject the rename for other reasons (lock, etc.). Empty new
+      // names are allowed here per the "sibling collisions + empty
+      // names allowed" design - plman may or may not accept them; if
+      // it doesn't, we surface a generic failure popup.
       const ok = plman.RenamePlaylist(row.node.index, newName);
       if (!ok) {
-        fb.ShowPopupMessage('Rename failed. This playlist may be locked against renaming.');
+        fb.ShowPopupMessage(
+          'Rename failed. foobar2000 may have rejected the new name (duplicate or locked playlist).'
+        );
         return;
       }
       // Optimistically update the cached name so the tree shows the

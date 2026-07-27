@@ -101,28 +101,25 @@ export class TreeStore {
     }
   }
 
-  renameFolder(
-    folder: FolderNode,
-    newName: string,
-    siblings: TreeNode[]
-  ): { ok: boolean; reason?: string } {
-    if (newName.length === 0) {
-      return { ok: false, reason: 'Name cannot be empty.' };
-    }
+  /**
+   * Renames a folder in-place. Per design, this does NOT enforce
+   * sibling-uniqueness and does NOT reject empty names - both are
+   * explicitly allowed so that the script can faithfully mirror the
+   * duplicates and edge cases the user has in their foobar2000 setup.
+   * Folders are a pure UI construct here, so two identically-named
+   * siblings is a valid (if unusual) state, and an empty folder name
+   * renders as just the disclosure marker, which is also a valid
+   * state.
+   *
+   * No-op when `newName` matches the current name (avoids an
+   * unnecessary write to disk).
+   */
+  renameFolder(folder: FolderNode, newName: string): void {
     if (newName === folder.name) {
-      return { ok: true };
-    }
-    for (const sibling of siblings) {
-      if (sibling !== folder && isFolderNode(sibling) && sibling.name === newName) {
-        return {
-          ok: false,
-          reason: `A folder named "${newName}" already exists here.`,
-        };
-      }
+      return;
     }
     folder.name = newName;
     this.scheduleSave();
-    return { ok: true };
   }
 
   /**

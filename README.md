@@ -4,18 +4,35 @@ A reimplementation of foobar2000 v1's `foo_plorg` (playlist organizer /
 folder tree) as a foobar2000 v2 Spider Monkey Panel script, written in
 TypeScript and bundled to a single flat JS file.
 
-## Status: Phase 4 - inline rename (F2)
+## Status: Phase 4 - inline rename (F2) + GUID-based identity (refactor)
 
 Phases 1, 2, and 3 are complete. Phases 1 and 2 are confirmed against a
 real foobar2000 + SMP install - see "Verification status" below. Phase 4
-adds F2-driven rename for both folders and playlists.
+adds F2-driven rename for both folders and playlists, on top of a
+mid-phase refactor that switched the playlist identity model from
+"index with cached name" to "stable GUID".
 
-- Folders: renamed in-tree, with sibling-uniqueness enforced (case-
-  sensitive, matching Windows Explorer). `scheduleSave()` persists the
-  change.
-- Playlists: routed through `plman.RenamePlaylist` (returns false on
-  collision or a `RenamePlaylist` lock, which we surface as a generic
-  popup).
+**GUID refactor (the big one this phase):** the SMP `plman` namespace
+exposes two undocumented helpers - `plman.GetGUID(playlistIndex)` and
+`plman.FindByGUID(guid)` - that give every playlist a stable string
+identifier that survives renames, reorders, and the duplicate-name
+collisions that motivated the previous "trust index" design in the
+first place. Reconciling by GUID removes all the previous "closest-
+index heuristic" / "trust the index and accept mis-binding"
+compromises. The on-disk schema bumped to v3 to record the new `id`
+field on playlist nodes; a one-time migration handles existing v2
+files.
+
+**Rename:**
+- Folders: renamed in-tree. Sibling-uniqueness is **not** enforced and
+  empty names **are** allowed - both per the owner's design choice
+  (mirrors whatever the user has in their foobar2000 setup, no
+  judgement from the script).
+- Playlists: routed through `plman.RenamePlaylist`. `plman` enforces
+  its own global uniqueness for playlist names and may reject empty
+  names; failures are surfaced as a generic popup. An optimistic
+  cached-name update on success avoids a flicker waiting for
+  `on_playlists_changed` to round-trip.
 - Input: SMP's modal `utils.InputBox` (try/catch on
   `errorOnCancel = true` for clean cancel detection).
 
@@ -28,25 +45,21 @@ swap.
 
 ### What's in the box
 
-- `src/types/tree.ts` - tree document schema (folders + playlist refs
-  keyed by `plman` index, with a cached name used as a relocation hint
-  during reconcile)
+- `src/types/tree.ts` - tree document schema v3 (folders + playlist
+  refs keyed by stable GUID, with a cached index + name for display)
 - `src/types/flags.ts` - numeric constants copied from the host's
   `Flags.js` reference (colour / font type IDs, `GdiDrawText` format
   flags, Windows VK codes for keyboard handling, modifier-mask bit
   values for mouse / keyboard callbacks)
 - `src/types/smp.d.ts` - hand-rolled ambient declarations for the
-  subset of the SMP API this project consumes; extend as new features
-  need more surface
+  subset of the SMP API this project consumes, including the two
+  undocumented `plman.GetGUID` / `plman.FindByGUID` calls this phase
+  depends on; extend as new features need more surface
 - `src/data/TreeStore.ts` - load / save the JSON tree file in the
   foobar profile (`%profile%\configuration\foo_plorg_smp.json`), plus
-  index-based reconciliation against the live playlist list to
-  self-heal drift (playlists reordered / added / removed by anything
-  other than this panel) - see "Playlist identity" below
-- `src/data/PlaylistSync.ts` - diffs successive playlist-name
-  snapshots to tell renames apart from add / remove / reorder, since
-  SMP's `on_playlists_changed()` callback fires for all of these with
-  no detail about which one happened
+  GUID-based reconciliation against the live playlist list that
+  self-heals drift (playlists added / removed / reordered anywhere
+  in foobar2000) - see "Playlist identity" below
 - `src/ui/Theme.ts` - resolves the current DUI / CUI font, text,
   background, and selection colours. Falls back to `gdi.Font("Segoe
   UI", 14)` if the host font lookup returns null
@@ -70,50 +83,81 @@ swap.
   `on_mouse_lbtn_dblclk`, `on_mouse_rbtn_up`, `on_mouse_wheel`,
   `on_key_down`)
 
-## Playlist identity: index, not name
+## Playlist identity: GUID, with cached index + name
 
-Playlist nodes are keyed by **index**, not name. This was a deliberate
-change partway through Phase 2: I confirmed by reviewing the full
-`plman` API surface that SMP exposes no stable playlist id anywhere
-(no Guid / Uuid / persistent handle - only mutable name and mutable
-index), so index is the best primitive available, especially with
-duplicate playlist names in play.
+Playlist nodes are keyed by a **stable string GUID** obtained from
+`plman.GetGUID(playlistIndex)`. This is the SMP equivalent of a
+"stable id" - the previous phases had to work around the absence of
+one with a fragile "trust index + closest-index heuristic" dance, but
+it turns out SMP exposes `GetGUID` and `FindByGUID` as undocumented
+helpers and they Just Work. Reconciliation now asks "where is the
+node whose GUID is X?" instead of "where is the playlist that used to
+be at index N and was named Y?", which removes the entire class of
+duplicate-name / index-drift edge cases the previous model had to
+contend with.
 
-The cost is that index isn't *actually* stable either - anything that
-reorders, adds, or removes a playlist shifts indices around it. Since
-`on_playlists_changed()` fires identically for renames / adds /
-removes / reorders with no detail about which happened,
-`PlaylistSync` + `TreeStore.reconcile()` together run a two-step
-self-healing pass on every firing:
+Each `PlaylistNode` now carries three fields:
 
-1. **Rename patch** - `PlaylistSync`'s snapshot diff identifies
-   same-index renames and patches the tree's cached name for that
-   index directly, before anything else runs. This has to happen
-   first, or a rename looks indistinguishable from "this playlist is
-   gone" to the next step.
-2. **Reconcile** - every playlist node is re-validated: if
-   `plman.GetPlaylistName(index)` still matches the node's cached
-   name, nothing moved. If not, search all playlists not already
-   claimed by another node for one whose name matches the cached
-   name, preferring the candidate closest to the node's last known
-   index when several playlists share that name. No match at all
-   means the playlist is gone.
+- `id` - the GUID. Identity. Set once during the first reconcile
+  after a node appears in the tree and never re-derived. (For v2
+  nodes that load without an `id`, the migration code in `reconcile`
+  does a one-time index+name match with a closest-index tiebreak to
+  pick a GUID, then the node behaves like any other v3 node from
+  there on.)
+- `index` - the current `plman` index, refreshed on every reconcile.
+  Used for immediate access (e.g. `plman.ActivePlaylist =
+  node.index`). Not an identity.
+- `name` - the current `plman` name, refreshed on every reconcile.
+  Pure display cache.
 
-This makes plain renames and single-playlist reorders self-heal
-correctly even with duplicate playlist names in the mix. What it
-**can't** do: if two identically-named playlists are both reordered
-*and* one of them renamed within the same host operation, there's no
-way to tell which node should end up where - this needs a stable id
-SMP doesn't provide. **The script operates under the assumption that
-you will manage playlists exclusively through this panel once it's
-built out.** External reordering is supported as a best-effort safety
-net for the main foobar2000 playlist UI and other panels, not the
-primary path.
+Reconcile algorithm:
 
-Schema v1 (name-only playlist nodes, no `index` field) loads without
-any explicit migration code - a node with a missing / invalid index
-is treated exactly like one whose index has drifted, and gets
-relocated by its cached name on the first reconcile pass.
+1. Build `guid -> {index, name}` for every live playlist via
+   `plman.GetGUID(i)` + `plman.GetPlaylistName(i)`.
+2. Walk the tree. For each `PlaylistNode`:
+   - If its `id` is in the live map, claim it, update `index` and
+     `name` from the live map. Log `relocated` if `index` changed.
+   - If its `id` is **not** in the live map, the playlist is gone
+     - drop the node, log `unresolved`.
+3. Any live GUID that wasn't claimed becomes a new root-level
+   `PlaylistNode` (the "imported orphan" path; this is the natural
+   entry point for autoplaylists created via foobar2000's internal
+   filter window).
+
+External renames, reorders, and removes are all handled by step 2
+automatically. The previous phase's "fool's errand" failure mode
+(two duplicate-named playlists both reordered + renamed within one
+host operation) simply doesn't apply any more - the GUID identifies
+the playlist, the name is just a cache.
+
+## Design choices (explicit, per owner)
+
+- **Sibling name collisions are allowed** - both for folders and
+  playlists. Folders are a UI construct with no external authority
+  forbidding duplicates; plman has its own global uniqueness for
+  playlist names, so duplicates at the playlist level aren't
+  possible anyway, but if two folders under the same parent want
+  the same name, the script doesn't stop them.
+- **Empty names are allowed** - both for folders and playlists.
+  Folders will render as a bare `▾ ` disclosure marker, which is a
+  valid if unusual state. For playlists, plman may or may not accept
+  an empty new name; if it doesn't, the generic rename-failed popup
+  tells the user.
+- **External add / remove is supported** - the reconcile path
+  imports new playlists as root-level orphans, and drops tree nodes
+  whose GUID disappears. See "External additions: autoplaylists
+  workflow" below for the practical implication.
+
+## External additions: autoplaylists workflow
+
+Autoplaylists created via foobar2000's `Library > Search` /
+`Create Autoplaylist` (or any other path that adds a playlist
+without going through this panel) will appear at the **end of the
+root level** in the tree, in the order `plman` reports them. Move
+them into a folder by drag (Phase 5) or by editing the tree JSON
+manually. There's no auto-classification magic - the script mirrors
+the structure you arrange, and surfaces new playlists for placement
+rather than guessing where they belong.
 
 ## Setup
 
@@ -162,20 +206,18 @@ context menu > Edit Script, or point the panel at the file directly).
       appears at `scrollOffsetPx = 0` (nothing was setting it yet at
       this point in time) and is sized / positioned plausibly.
 - [x] Resize fires `on_size` without error.
-- [x] Reorder a playlist via drag in the main playlist tabs with
-      uniquely-named playlists: `TreeStore.reconcile()`'s
-      name-based relocation correctly finds the playlist at its new
-      index and the tree node stays put logically (console logs a
-      `relocated` entry per affected node). Confirmed with five
-      playlists in a real install.
-- [x] Reorder the same way with two or more playlists that share a
-      name: reconcile silently picks the closest-index candidate
-      (best-effort heuristic, not a guarantee), per the documented
-      "no stable id" limitation. **This was confirmed to be
-      acceptable - the script does not pretend to handle every
-      reordering with duplicate names correctly, and the README's
-      "manage playlists through this script" assumption is the
-      contract.**
+- [x] Reorder a playlist via drag in the main playlist tabs (with
+      any name, duplicates or not): `TreeStore.reconcile()`'s GUID
+      lookup follows the playlist to its new index and the tree node
+      stays put logically (console logs a `relocated` entry with
+      `fromIndex -> toIndex`). Confirmed against a real install.
+- [x] Rename a playlist via the main UI: tree's cached name updates
+      on the next reconcile. With GUID identity, this is a trivial
+      no-op for the tree structure (only the cached name field
+      changes).
+- [x] Add a new autoplaylist via the Library filter window: the new
+      playlist shows up at the end of the root level in the tree
+      on the next reconcile. Logged as `imported N playlist(s)`.
 
 **Known benign quirk:** the full startup sequence logs twice the
 first time a script edit is applied via the panel's Edit Script
@@ -240,7 +282,8 @@ verification against a real foobar2000 + SMP install:
       and the current name pre-filled. Confirming with a new name
       renames the playlist in foobar2000 (visible in the main
       playlist tabs and in any other panel that lists playlists).
-      The tree repaints with the new name.
+      The tree repaints with the new name immediately (no flicker
+      via the optimistic cached-name update).
 - [ ] F2 on a single selected folder row opens the same dialog with
       the prompt "New folder name:". Confirming renames the folder
       in the tree and the change is persisted to
@@ -249,31 +292,52 @@ verification against a real foobar2000 + SMP install:
       (try/catch on `errorOnCancel = true` handles this).
 - [ ] F2 on an empty selection is a silent no-op. F2 on a multi-row
       selection shows a popup: "Select a single item to rename."
-- [ ] Renaming a folder to a name that already exists as a sibling
-      folder shows a popup: `A folder named "<x>" already exists
-      here.` and leaves both folders unchanged. Case-sensitive
-      match.
-- [ ] Renaming a playlist to a name that already exists elsewhere
+- [ ] F2 on a folder, type a name that already exists as a sibling
+      folder, confirm: rename proceeds without complaint. Two
+      folders with the same name under the same parent is an
+      allowed state per the design.
+- [ ] F2 on a folder, type an empty string (or a string of just
+      whitespace, which gets trimmed), confirm: rename proceeds; the
+      folder renders as a bare `▾ ` disclosure marker. The
+      rename is a silent success, no popup.
+- [ ] F2 on a playlist, type a name that already exists elsewhere
       in plman (regardless of whether that other playlist is in our
-      tree) shows a popup: "Rename failed. A playlist with that
-      name may already exist, or this playlist may be locked for
-      rename." `plman.RenamePlaylist` returns false; we surface it
-      generically.
-- [ ] F2 on a playlist, type empty string, press OK: shows
-      "Name cannot be empty." and the playlist name is unchanged.
-- [ ] F2 on a playlist, press OK without changing anything (or
+      tree) shows a popup: "Rename failed. foobar2000 may have
+      rejected the new name (duplicate or locked playlist)." The
+      tree name is unchanged.
+- [ ] F2 on a playlist, type an empty string, press OK: if plman
+      accepts it, the tree renames successfully; if plman rejects
+      it, the generic "Rename failed" popup shows.
+- [ ] F2 on anything, press OK without changing anything (or
       re-type the same name): silent no-op (no popup, no log, no
       write).
 - [ ] Rename persists across a foobar2000 restart. For folders this
       is direct (we write the tree file). For playlists it's via
-      foobar2000's own persistence - the tree's cached name gets
-      re-aligned by `on_playlists_changed` on next start.
+      foobar2000's own persistence; the tree's GUID lookup on
+      next-start reconcile finds the (now renamed) playlist by id
+      and refreshes the cached name.
+- [ ] **GUID refactor regression checks:**
+  - [ ] A pre-existing v2 tree file (`%profile%\configuration\
+        foo_plorg_smp.json`) loads under the new build. The console
+        logs the v2-to-v3 migration; after the first reconcile,
+        every playlist node has a non-empty `id` field. Restart
+        foobar and confirm the tree still loads correctly (no
+        re-migration needed - the file is now v3 on disk).
+  - [ ] Add a new playlist via the Library filter window; the
+        reconcile log shows it as `imported`. Its node has a fresh
+        GUID and lands at the end of the root level.
+  - [ ] Rename an existing playlist via the main UI (not via this
+        panel). The tree's cached name updates on the next
+        reconcile; the node's id, index, and position are
+        unchanged.
+  - [ ] With two or more duplicate-named playlists, drag-reorder
+        them in the main playlist tabs. The console logs `relocated`
+        for the affected nodes; the tree still shows the right
+        playlists at the right rows afterwards (GUID lookup, not
+        name lookup, so duplicate names don't confuse it).
 
 ## Known limitations (by design, for this phase)
 
-- Playlist identity and reorder self-healing have real limits with
-  duplicate names combined with simultaneous renames - see
-  "Playlist identity" above for the full explanation.
 - The `MouseMask` / `KeyMask` bit values for the `mask` argument of
   `on_mouse_*` and `on_key_down` are the Windows-expected convention
   (shift = 0x04 / 0x01, ctrl = 0x08 / 0x02, etc.) and are the best
@@ -282,20 +346,46 @@ verification against a real foobar2000 + SMP install:
   shift as ctrl and vice versa - a single binary grep / `console.log`
   of the raw `mask` value will confirm. Adjust `src/types/flags.ts`
   if so.
+- **`plman.GetGUID` / `plman.FindByGUID` are undocumented.** They
+  exist in the SMP versions this script has been tested against, but
+  there's no promise they won't be renamed / removed in a future SMP
+  release. The dependency is explicit in `src/types/smp.d.ts` (look
+  for the "Undocumented GUID methods" comment). If they ever break,
+  the script will need a fallback - likely a return to a "trust
+  index" model with a much smaller feature set, since that's the
+  only mode that doesn't need stable identity.
 - Colours / fonts are read once at startup - `on_colours_changed`
   and `on_font_changed` aren't wired up yet, so live theme changes
   in DUI / CUI preferences won't be reflected until the panel
   reloads. The `refreshTheme()` method on `TreeView` is the hook
   once those callbacks land.
-- No right-click context menu, no inline rename, no drag & drop
-  reorder yet - Phases 4, 5, and 6.
+- No right-click context menu yet - Phase 6.
+- No drag & drop reorder yet - Phase 5 (drag-drop, OLE drag-enter /
+  drop on the tree from itself and from Explorer).
 - `on_mouse_rbtn_up` is wired as a no-op (returns without
   touching the selection) so SMP's default behaviour applies
   cleanly until Phase 6 builds the real context menu.
+- The v2-to-v3 migration is a one-time name+closest-index heuristic
+  for nodes that load without a GUID. With duplicate names AND a
+  reorder having happened since the file was last written, the
+  heuristic may bind a node to a different playlist than the user
+  intended. Once any v2 file is reconciled once, it's saved as v3
+  with GUIDs and never re-runs the heuristic, so this is a
+  one-shot concern at most.
 
 ## Next: Phase 5
 
-Drag & drop: internal reorder / move first (playlists and folders
-within the tree), then track-drop-onto-playlist (add items to a
-playlist, with Ctrl = copy per legacy behaviour), then Explorer file
-drop (create new playlists from files / import `.m3u8` etc).
+Drag & drop. With the GUID refactor in place, the tricky part of
+internal reorder - keeping the tree's references correct after a
+move - is now handled automatically by `reconcile()` following the
+GUID. So Phase 5's internal-reorder scope is mostly the UI:
+
+- drag a row to reorder within its parent
+- drag onto a folder to move INTO it
+- drag between rows to insert at a position
+- drag from Explorer / foobar2000 itself to create / append
+
+Then track-drop-onto-playlist (with Ctrl = copy per legacy
+foo_plorg behaviour), and finally folder / playlist creation
+through a right-click context menu (which then bumps us into Phase 6
+proper).
