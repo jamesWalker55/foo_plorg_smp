@@ -4,7 +4,7 @@ import { isFolderNode, isPlaylistNode, TreeNode } from './types/tree';
 
 window.DefineScript('foo_plorg_smp', {
   author: 'you',
-  version: '0.6.0-phase5-internal-drag',
+  version: '0.6.1-phase5-lbtn-up-fix',
   features: { drag_n_drop: true, grab_focus: true },
 });
 
@@ -80,6 +80,10 @@ function on_mouse_lbtn_down(x: number, y: number, mask: number): void {
   treeView?.onMouseLbtnDown(x, y, mask);
 }
 
+function on_mouse_lbtn_up(x: number, y: number, mask: number): void {
+  treeView?.onMouseLbtnUp(x, y, mask);
+}
+
 function on_mouse_lbtn_dblclk(x: number, y: number, mask: number): void {
   treeView?.onMouseLbtnDblClick(x, y, mask);
 }
@@ -111,6 +115,7 @@ Object.assign(globalThis, {
   on_paint,
   on_size,
   on_mouse_lbtn_down,
+  on_mouse_lbtn_up,
   on_mouse_lbtn_dblclk,
   on_mouse_rbtn_up,
   on_mouse_move,
