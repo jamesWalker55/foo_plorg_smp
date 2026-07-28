@@ -4,7 +4,7 @@ import { isFolderNode, isPlaylistNode, TreeNode } from './types/tree';
 
 window.DefineScript('foo_plorg_smp', {
   author: 'you',
-  version: '0.5.0-phase5-guid-refactor',
+  version: '0.6.0-phase5-internal-drag',
   features: { drag_n_drop: true, grab_focus: true },
 });
 
@@ -88,6 +88,14 @@ function on_mouse_rbtn_up(x: number, y: number, mask: number): void {
   treeView?.onMouseRbtnUp(x, y, mask);
 }
 
+function on_mouse_move(x: number, y: number, mask: number): void {
+  treeView?.onMouseMove(x, y, mask);
+}
+
+function on_mouse_leave(): void {
+  treeView?.onMouseLeave();
+}
+
 function on_mouse_wheel(step: number): void {
   treeView?.onMouseWheel(step);
 }
@@ -105,6 +113,8 @@ Object.assign(globalThis, {
   on_mouse_lbtn_down,
   on_mouse_lbtn_dblclk,
   on_mouse_rbtn_up,
+  on_mouse_move,
+  on_mouse_leave,
   on_mouse_wheel,
   on_key_down,
 });

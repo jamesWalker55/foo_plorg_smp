@@ -1,5 +1,5 @@
 import { TreeStore } from '../data/TreeStore';
-import { isFolderNode, isPlaylistNode } from '../types/tree';
+import { isFolderNode, isPlaylistNode, TreeNode } from '../types/tree';
 import {
   clampScrollOffset,
   ensureRowVisible,
@@ -28,6 +28,22 @@ const DISCLOSURE_HIT_WIDTH_PX = 16;
  *  Windows default and feels right for a tree. */
 const WHEEL_LINES_PER_NOTCH = 3;
 
+/** Mouse-movement (in window pixels) past which a held left button
+ *  becomes a drag rather than a click. 5 is a common Windows default
+ *  and is forgiving of small mouse jiggles during a deliberate click. */
+const DRAG_THRESHOLD_PX = 5;
+
+/** Vertical split of a folder row for drop-position detection. Top
+ *  zone = "insert before", middle zone = "into this folder", bottom
+ *  zone = "insert after". Matches Windows Explorer semantics. */
+const FOLDER_BEFORE_FRAC = 0.25;
+const FOLDER_AFTER_FRAC = 0.75;
+
+/** Height of the horizontal line painted at an insertion drop
+ *  position. 2px reads as a "here" indicator without dominating the
+ *  row's text. */
+const DROP_INDICATOR_PX = 2;
+
 // Plain-text disclosure indicators, since icons are out of scope for now
 // (see project decisions - plain text, clean indent, no icons/connector
 // lines). Revisit if/when Phase 7 (colour/state polish) adds real icons.
@@ -42,6 +58,49 @@ interface HitResult {
   rowIndex: number;
   isDisclosure: boolean;
   row: FlatRow;
+}
+
+/**
+ * Where a drag-and-drop should land. `rowIndex === -1` means "append
+ * to root" (drag is over empty space below all rows). `position` is
+ * only meaningful for valid in-row targets; for `append` it's
+ * always `'after'` but the rowIndex check is what tells the caller.
+ */
+interface DropTarget {
+  rowIndex: number;
+  position: 'before' | 'after' | 'into';
+}
+
+/**
+ * Drag-and-drop state for an INTERNAL drag (user dragging rows
+ * within our tree). The state machine has three meaningful states:
+ *
+ *   - `null` (no drag in progress) - the idle case
+ *   - `active: false` - lbutton down, not yet past the drag threshold.
+ *     We're "maybe dragging"; a mouseup with no movement commits a
+ *     click, not a drop.
+ *   - `active: true` - lbutton down AND past the drag threshold. The
+ *     selection has been updated to reflect the dragged set, and
+ *     `dropTarget` is updated on every mouse move. A mouseup commits
+ *     a drop.
+ *
+ * `sourceRows` is snapshotted at drag start and never mutated during
+ * the drag - even if the user mouses over other rows, the dragged
+ * set stays the same. `forbiddenTargets` is the set of nodes the
+ * drop target cannot be (the source nodes themselves, plus every
+ * descendant of any source folder - a drop there would either be a
+ * no-op or create a cycle).
+ */
+interface InternalDragState {
+  sourceRows: number[];
+  forbiddenTargets: Set<TreeNode>;
+  dropTarget: DropTarget | null;
+  startX: number;
+  startY: number;
+  active: boolean;
+  /** The hit result from the lbutton-down, used to commit a click
+   *  if the user releases without dragging. */
+  clickHit: HitResult | null;
 }
 
 export class TreeView {
@@ -59,6 +118,9 @@ export class TreeView {
    *  active one (e.g. an autoplaylist that was just removed). Updated
    *  during paint, so it always reflects what we just drew. */
   private activeRowIndex: number | null = null;
+
+  /** Internal drag state. null when no drag is in progress. */
+  private internalDrag: InternalDragState | null = null;
 
   constructor(private readonly treeStore: TreeStore) {
     this.theme = resolveTheme();
@@ -119,6 +181,58 @@ export class TreeView {
     if (needsScrollbar) {
       this.drawScrollbar(gr, viewportWidth, viewportHeight, totalContentHeight);
     }
+
+    // Drop indicator on top of everything else so the user always
+    // sees where the current drag will land.
+    if (this.internalDrag?.active && this.internalDrag.dropTarget !== null) {
+      this.paintDropIndicator(gr, this.internalDrag.dropTarget, textAreaWidth);
+    }
+  }
+
+  /**
+   * Paints the visual feedback for an active internal drag: a 2px
+   * line above/below a row for "insert before/after", or a border
+   * around a folder row for "into". The colour is the same as the
+   * active-playlist frame - both are "this is the target"
+   * affordances and matching them keeps the visual vocabulary tight.
+   */
+  private paintDropIndicator(gr: GdiGraphics, target: DropTarget, textAreaWidth: number): void {
+    const colour = this.theme.activeItemFrameColour;
+
+    if (target.rowIndex === -1) {
+      // Append to root - paint a line at the bottom of the last row
+      // (or at the top of the panel if the tree is empty, but we
+      // wouldn't be in a drag in that case).
+      const lastIndex = this.lastFlattened.length - 1;
+      if (lastIndex < 0) return;
+      const lastY = rowY(lastIndex, this.rowHeight) - this.scrollOffsetPx;
+      const lineY = lastY + this.rowHeight - DROP_INDICATOR_PX;
+      gr.FillSolidRect(0, lineY, textAreaWidth, DROP_INDICATOR_PX, colour);
+      return;
+    }
+
+    const row = this.lastFlattened[target.rowIndex];
+    if (!row) return;
+    const y = rowY(target.rowIndex, this.rowHeight) - this.scrollOffsetPx;
+
+    if (target.position === 'into' && isFolderNode(row.node)) {
+      // Highlight the folder row with a frame. We use a 2px frame
+      // (thicker than the active-playlist frame) to distinguish
+      // "this is the drop target" from "this is the active playlist".
+      const frame = 2;
+      gr.DrawRect(
+        frame / 2,
+        y + frame / 2,
+        Math.max(0, textAreaWidth - frame),
+        Math.max(0, this.rowHeight - frame),
+        frame,
+        colour
+      );
+      return;
+    }
+
+    const lineY = target.position === 'before' ? y : y + this.rowHeight - DROP_INDICATOR_PX;
+    gr.FillSolidRect(0, lineY, textAreaWidth, DROP_INDICATOR_PX, colour);
   }
 
   private paintRow(
@@ -234,6 +348,7 @@ export class TreeView {
       // returns null there because rowWidth > textAreaWidth is not
       // enforced, but the scrollbar x is well to the right of any row.)
       this.selection.clear();
+      this.internalDrag = null;
       window.Repaint();
       return;
     }
@@ -243,9 +358,144 @@ export class TreeView {
       // NEVER ctrl/shift-modified - those modifiers belong to selection
       // operations. The click also doesn't change the selection, so
       // users can collapse a folder while keeping their current pick.
+      // Disclosure clicks never initiate a drag - the row wasn't
+      // "picked up" so there's nothing to drop.
       hit.row.node.expanded = !hit.row.node.expanded;
       this.treeStore.scheduleSave();
+      this.internalDrag = null;
       window.Repaint();
+      return;
+    }
+
+    // We don't yet know whether this is a click or a drag, so we
+    // record the source rows + start position and defer the
+    // selection change + activation to the matching mouseup. The
+    // selection is NOT updated here, so the user sees no visual
+    // change during the (short) window between lbtn_down and the
+    // lbtn_up that commits a click.
+    //
+    // If the selection is non-empty, the drag moves the whole
+    // selection. If empty, the drag moves the just-clicked row.
+    // Either way, the source is snapshotted now so subsequent
+    // selection changes (e.g. another panel stealing focus) don't
+    // change what's being dragged.
+    const isCtrl = (mask & MouseMask.CONTROL) !== 0;
+    const isShift = (mask & MouseMask.SHIFT) !== 0;
+
+    let sourceRows: number[];
+    if (this.selection.getSize() > 0 && !isCtrl && !isShift) {
+      // Drag the current selection as-is. If the clicked row is
+      // already in the selection this is just "drag what I have";
+      // if it isn't, fall through to the single-row case so the
+      // user can grab a row that's not currently selected.
+      if (this.selection.isSelected(hit.rowIndex)) {
+        sourceRows = [...this.selection.iter()];
+      } else {
+        sourceRows = [hit.rowIndex];
+      }
+    } else {
+      sourceRows = [hit.rowIndex];
+    }
+
+    this.internalDrag = {
+      sourceRows,
+      forbiddenTargets: this.computeForbiddenTargets(sourceRows),
+      dropTarget: null,
+      startX: x,
+      startY: y,
+      active: false,
+      clickHit: hit,
+    };
+  }
+
+  onMouseLbtnDblClick(x: number, y: number, _mask: number): void {
+    const hit = this.hitTest(x, y);
+    if (hit === null) return;
+
+    if (isFolderNode(hit.row.node)) {
+      // Double-click on a folder toggles it - same as the disclosure
+      // triangle. The single-click on the row body (not the triangle)
+      // selects without toggling, so this is the "I clicked the folder
+      // name twice" gesture.
+      hit.row.node.expanded = !hit.row.node.expanded;
+      this.treeStore.scheduleSave();
+    } else if (isPlaylistNode(hit.row.node)) {
+      plman.ActivePlaylist = hit.row.node.index;
+    }
+    window.Repaint();
+  }
+
+  onMouseMove(x: number, y: number, mask: number): void {
+    const drag = this.internalDrag;
+    if (drag === null) return;
+
+    // Mouse moved with no button held - the user released the
+    // button outside our panel (we'd normally get a mouseup
+    // too, but defensive: clear state if we somehow don't).
+    if ((mask & MouseMask.LBUTTON) === 0) {
+      this.internalDrag = null;
+      return;
+    }
+
+    if (!drag.active) {
+      // Threshold gate: only commit to a real drag once the user
+      // has moved the mouse a non-trivial distance. This keeps
+      // ordinary clicks (which have a few pixels of mouse
+      // jiggle) from accidentally starting a drag.
+      const dx = x - drag.startX;
+      const dy = y - drag.startY;
+      if (dx * dx + dy * dy < DRAG_THRESHOLD_PX * DRAG_THRESHOLD_PX) {
+        return;
+      }
+      drag.active = true;
+      // Update the selection to match the dragged set. The
+      // selection wasn't changed in lbtn_down precisely so this
+      // transition can also act as a "select what I'm dragging"
+      // affordance - the user sees the source rows highlight as
+      // the drag begins.
+      this.selection.clear();
+      for (const row of drag.sourceRows) {
+        this.selection.toggle(row);
+      }
+    }
+
+    drag.dropTarget = this.computeDropTarget(x, y, drag.forbiddenTargets);
+    window.Repaint();
+  }
+
+  onMouseLeave(): void {
+    // Cancel any in-progress potential drag. We can't reliably
+    // detect a mouseup outside the panel, so cancelling here is
+    // the safest behaviour - the user can simply click again to
+    // restart the drag.
+    this.internalDrag = null;
+  }
+
+  onMouseLbtnUp(x: number, y: number, mask: number): void {
+    const drag = this.internalDrag;
+    this.internalDrag = null;
+
+    if (drag !== null && drag.active) {
+      // Drag commit. If the drop target is null (e.g. the user
+      // released over the scrollbar, or no valid target), the
+      // drop is silently aborted - the source selection is left
+      // as the last `mousemove` set it, which the user can clear
+      // with Esc.
+      if (drag.dropTarget !== null) {
+        this.performInternalDrop(drag);
+      }
+      window.Repaint();
+      return;
+    }
+
+    // Click commit (no drag occurred). Reproduce the original
+    // lbtn_down selection/activation logic against the hit
+    // result captured at lbtn_down time.
+    const hit = drag?.clickHit ?? null;
+    if (hit === null) {
+      // No drag state and no hit - shouldn't happen via the
+      // normal mouse flow (lbtn_down would have set clickHit
+      // before we got here), but defensively no-op.
       return;
     }
 
@@ -266,23 +516,6 @@ export class TreeView {
       plman.ActivePlaylist = hit.row.node.index;
     }
 
-    window.Repaint();
-  }
-
-  onMouseLbtnDblClick(x: number, y: number, _mask: number): void {
-    const hit = this.hitTest(x, y);
-    if (hit === null) return;
-
-    if (isFolderNode(hit.row.node)) {
-      // Double-click on a folder toggles it - same as the disclosure
-      // triangle. The single-click on the row body (not the triangle)
-      // selects without toggling, so this is the "I clicked the folder
-      // name twice" gesture.
-      hit.row.node.expanded = !hit.row.node.expanded;
-      this.treeStore.scheduleSave();
-    } else if (isPlaylistNode(hit.row.node)) {
-      plman.ActivePlaylist = hit.row.node.index;
-    }
     window.Repaint();
   }
 
@@ -561,6 +794,164 @@ export class TreeView {
       isFolderNode(row.node) && x >= disclosureX && x < disclosureX + DISCLOSURE_HIT_WIDTH_PX;
 
     return { rowIndex, isDisclosure, row };
+  }
+
+  /**
+   * Build the set of nodes that the current drag cannot land on:
+   * the source nodes themselves, plus every descendant of any
+   * source folder. Used to short-circuit the drop-position search
+   * so we never suggest an "into folder" that would create a cycle,
+   * and so we never suggest "before/after X" on a row whose node
+   * is forbidden (rare for siblings, but possible for the source
+   * nodes themselves - which would be a no-op anyway).
+   */
+  private computeForbiddenTargets(sourceRows: number[]): Set<TreeNode> {
+    const forbidden = new Set<TreeNode>();
+    for (const rowIndex of sourceRows) {
+      const row = this.lastFlattened[rowIndex];
+      if (!row) continue;
+      forbidden.add(row.node);
+      if (isFolderNode(row.node)) {
+        this.collectDescendants(row.node.children, forbidden);
+      }
+    }
+    return forbidden;
+  }
+
+  private collectDescendants(nodes: TreeNode[], into: Set<TreeNode>): void {
+    for (const node of nodes) {
+      into.add(node);
+      if (isFolderNode(node)) {
+        this.collectDescendants(node.children, into);
+      }
+    }
+  }
+
+  /**
+   * Translate a (x, y) into a drop target for the current drag.
+   * Returns null when the position is over the scrollbar, over a
+   * forbidden node, or otherwise not a valid drop site.
+   *
+   * Position semantics:
+   *   - Folder row, top FOLDER_BEFORE_FRAC: insert before
+   *   - Folder row, middle: into (append at end of folder's children)
+   *   - Folder row, bottom FOLDER_AFTER_FRAC: insert after
+   *   - Playlist row, top half: insert before
+   *   - Playlist row, bottom half: insert after
+   *   - Empty space below all rows: append to root (rowIndex === -1)
+   */
+  private computeDropTarget(x: number, y: number, forbidden: Set<TreeNode>): DropTarget | null {
+    if (this.lastFlattened.length === 0) {
+      return null;
+    }
+
+    // Same scrollbar exclusion as hitTest.
+    const needsScrollbar = this.lastFlattened.length * this.rowHeight > window.Height;
+    if (needsScrollbar && x >= window.Width - SCROLLBAR_WIDTH_PX - SCROLLBAR_MARGIN_PX) {
+      return null;
+    }
+
+    const rowIndex = rowAtY(y, this.scrollOffsetPx, this.rowHeight, this.lastFlattened.length);
+    if (rowIndex === null) {
+      // Below the last row - append to root. The caller treats
+      // rowIndex === -1 as "append"; we don't need a forbidden
+      // check because root never contains the source nodes during
+      // a drag (they're snapshotted into drag.sourceRows before
+      // any move can happen).
+      return { rowIndex: -1, position: 'after' };
+    }
+
+    const row = this.lastFlattened[rowIndex];
+    if (!row) {
+      return null;
+    }
+
+    const rowTop = rowY(rowIndex, this.rowHeight);
+    const relativeY = y - rowTop;
+
+    if (isFolderNode(row.node)) {
+      // The folder itself can't be a forbidden target (a source
+      // folder is in `forbidden`, but we still want to offer
+      // "insert before / after" the folder, just not "into" it).
+      const intoForbidden = forbidden.has(row.node);
+
+      if (relativeY < this.rowHeight * FOLDER_BEFORE_FRAC) {
+        return { rowIndex, position: 'before' };
+      } else if (relativeY < this.rowHeight * FOLDER_AFTER_FRAC) {
+        // Middle: prefer "into", but fall back to "before" if the
+        // folder is forbidden (dragging a folder into itself or
+        // one of its own descendants would create a cycle).
+        return intoForbidden ? { rowIndex, position: 'before' } : { rowIndex, position: 'into' };
+      } else {
+        return { rowIndex, position: 'after' };
+      }
+    }
+
+    // Playlist row. Refuse if the playlist itself is forbidden
+    // (i.e. it's one of the dragged rows - moving a row to
+    // before/after itself is a no-op we don't want to perform).
+    if (forbidden.has(row.node)) {
+      return null;
+    }
+
+    return relativeY < this.rowHeight * 0.5
+      ? { rowIndex, position: 'before' }
+      : { rowIndex, position: 'after' };
+  }
+
+  /**
+   * Translate a resolved drop target into the (parent array, index)
+   * pair the TreeStore expects, and dispatch to moveNodes.
+   */
+  private performInternalDrop(drag: InternalDragState): void {
+    if (drag.dropTarget === null) return;
+    const target = drag.dropTarget;
+
+    let targetParent: TreeNode[];
+    let targetIndex: number;
+
+    if (target.rowIndex === -1) {
+      // Append to root.
+      targetParent = this.treeStore.getDocument().nodes;
+      targetIndex = targetParent.length;
+    } else {
+      const row = this.lastFlattened[target.rowIndex];
+      if (!row) return;
+      if (target.position === 'into') {
+        if (!isFolderNode(row.node)) return; // shouldn't happen
+        targetParent = row.node.children;
+        targetIndex = targetParent.length;
+      } else {
+        targetParent = row.parent;
+        const idxInParent = targetParent.indexOf(row.node);
+        if (idxInParent === -1) return;
+        targetIndex = target.position === 'before' ? idxInParent : idxInParent + 1;
+      }
+    }
+
+    // Resolve source rows to (node, parent, indexInParent) tuples.
+    // The parent reference is used to remove the source from its
+    // current location, so it must be the array the source node
+    // currently lives in - not the post-move parent.
+    const sources: Array<{ node: TreeNode; parent: TreeNode[]; indexInParent: number }> = [];
+    for (const flatIndex of drag.sourceRows) {
+      const row = this.lastFlattened[flatIndex];
+      if (!row) continue;
+      const idxInParent = row.parent.indexOf(row.node);
+      if (idxInParent === -1) continue;
+      sources.push({ node: row.node, parent: row.parent, indexInParent: idxInParent });
+    }
+    if (sources.length === 0) return;
+
+    this.treeStore.moveNodes(sources, { parent: targetParent, index: targetIndex });
+
+    // After the move, the previously-selected rows now live at
+    // different flat indices. The simplest correct thing is to
+    // clear the selection - the user can re-select what they
+    // just moved if they want to keep acting on it. Trying to
+    // re-resolve the same nodes to their new flat indices is
+    // fiddly and not obviously more useful.
+    this.selection.clear();
   }
 }
 

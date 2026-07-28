@@ -123,6 +123,56 @@ export class TreeStore {
   }
 
   /**
+   * Structural move of one or more nodes within the document tree.
+   * Both `sources` and `target` reference the same arrays stored on
+   * the document (either a folder's `children` or the document's
+   * top-level `nodes` array), so this method mutates the document
+   * directly rather than returning a new structure.
+   *
+   * Source nodes are moved, not cloned - the same `TreeNode`
+   * references land at the target. The caller is responsible for
+   * pre-validation: a drop that would create a cycle (dragging a
+   * folder into one of its own descendants) or land a source on
+   * itself must be rejected before reaching this method.
+   *
+   * Sources are taken in the order the caller passes them; the
+   * result preserves that user-intended order at the target position
+   * regardless of where the sources originally sat in their parents.
+   * Same-parent removals before the target index are accounted for
+   * by the `shift` calculation: each source removed from the target
+   * parent at an index strictly less than `target.index` pushes the
+   * target's effective position down by one.
+   */
+  moveNodes(
+    sources: ReadonlyArray<{ node: TreeNode; parent: TreeNode[]; indexInParent: number }>,
+    target: { parent: TreeNode[]; index: number }
+  ): void {
+    if (sources.length === 0) return;
+
+    let shift = 0;
+    for (const src of sources) {
+      if (src.parent === target.parent && src.indexInParent < target.index) {
+        shift++;
+      }
+    }
+
+    const sortedForRemoval = [...sources].sort((a, b) => b.indexInParent - a.indexInParent);
+    for (const src of sortedForRemoval) {
+      src.parent.splice(src.indexInParent, 1);
+    }
+
+    const insertAt = Math.max(0, Math.min(target.index - shift, target.parent.length));
+
+    for (let i = 0; i < sources.length; i++) {
+      const src = sources[i];
+      if (!src) continue;
+      target.parent.splice(insertAt + i, 0, src.node);
+    }
+
+    this.scheduleSave();
+  }
+
+  /**
    * Re-validates every playlist node's GUID against the live playlist
    * list, self-healing index drift, and imports any playlist not claimed
    * by an existing node as a new root-level orphan.

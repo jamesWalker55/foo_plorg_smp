@@ -4,24 +4,17 @@ A reimplementation of foobar2000 v1's `foo_plorg` (playlist organizer /
 folder tree) as a foobar2000 v2 Spider Monkey Panel script, written in
 TypeScript and bundled to a single flat JS file.
 
-## Status: Phase 4 - inline rename (F2) + GUID-based identity (refactor)
+## Status: Phase 5 Round 1 - internal drag-and-drop
 
 Phases 1, 2, and 3 are complete. Phases 1 and 2 are confirmed against a
 real foobar2000 + SMP install - see "Verification status" below. Phase 4
 adds F2-driven rename for both folders and playlists, on top of a
 mid-phase refactor that switched the playlist identity model from
-"index with cached name" to "stable GUID".
-
-**GUID refactor (the big one this phase):** the SMP `plman` namespace
-exposes two undocumented helpers - `plman.GetGUID(playlistIndex)` and
-`plman.FindByGUID(guid)` - that give every playlist a stable string
-identifier that survives renames, reorders, and the duplicate-name
-collisions that motivated the previous "trust index" design in the
-first place. Reconciling by GUID removes all the previous "closest-
-index heuristic" / "trust the index and accept mis-binding"
-compromises. The on-disk schema bumped to v3 to record the new `id`
-field on playlist nodes; a one-time migration handles existing v2
-files.
+"index with cached name" to "stable GUID". Phase 5 Round 1 adds
+internal drag-and-drop within the tree (drag a row to reorder, drop
+on a folder to move into it, drop between rows to insert at a
+position). External drag (Explorer files, foobar track lists) is
+scheduled for Phase 5 Round 2 and is not implemented yet.
 
 **Rename:**
 - Folders: renamed in-tree. Sibling-uniqueness is **not** enforced and
@@ -75,13 +68,19 @@ swap.
   plain-text folder disclosure markers (`▾` / `▸` - no icons, per
   current UX decisions), selection-background + active-playlist frame,
   mouse-wheel scroll, the input dispatch (click / dblclick / wheel /
-  key) wired to selection and tree mutations, and the F2 rename
-  handler (`onRenameRequested`)
+  key) wired to selection and tree mutations, the F2 rename handler
+  (`onRenameRequested`), and the internal drag-and-drop state machine
+  (`onMouseLbtnDown` / `onMouseMove` / `onMouseLbtnUp` / `onMouseLeave`,
+  drop-target computation, drop-indicator paint)
+- `src/data/TreeStore.ts` - includes `moveNodes(sources, target)`
+  for the structural move the internal drag commits on drop (with
+  correct same-parent index adjustment for sources that were
+  originally before the target)
 - `src/main.ts` - wires the above together; registers every SMP
   callback this phase needs (`on_paint`, `on_size`, `on_playlists_changed`,
   `on_playlist_switch`, `on_script_unload`, `on_mouse_lbtn_down`,
-  `on_mouse_lbtn_dblclk`, `on_mouse_rbtn_up`, `on_mouse_wheel`,
-  `on_key_down`)
+  `on_mouse_lbtn_dblclk`, `on_mouse_rbtn_up`, `on_mouse_move`,
+  `on_mouse_leave`, `on_mouse_wheel`, `on_key_down`)
 
 ## Playlist identity: GUID, with cached index + name
 
@@ -336,6 +335,92 @@ verification against a real foobar2000 + SMP install:
         playlists at the right rows afterwards (GUID lookup, not
         name lookup, so duplicate names don't confuse it).
 
+### Phase 5 Round 1 - internal drag-and-drop
+
+Phase 5 Round 1 is built and typechecks; the following still needs
+verification against a real foobar2000 + SMP install. The drag
+gesture is the standard "hold left button, move past a small
+threshold (~5px), release on target" pattern - the same as Windows
+Explorer.
+
+- [ ] **Single-row drag (playlist):** click-and-hold on a playlist
+      row, drag to a different position in the same folder, release.
+      The playlist moves to the new position. No visual artifacts
+      (selection background updates, drop indicator disappears, no
+      stray highlights).
+- [ ] **Single-row drag (folder):** same gesture on a folder row.
+      The folder moves; children come with it.
+- [ ] **Drag into folder (playlist):** drag a playlist row to a
+      folder row. Hovering in the middle third of the folder row
+      paints a 2px frame around the folder (the "into" indicator).
+      Release: the playlist is appended to the folder.
+- [ ] **Drag into folder (folder):** drag a folder row to another
+      folder row. The target folder highlights; release moves the
+      source folder inside.
+- [ ] **Drop position split (folder target):** on a folder row,
+      hover in the top ¼ to see an "insert before" line above the
+      folder; hover in the bottom ¼ to see an "insert after" line
+      below; the middle ½ shows the "into" frame. Verify all three
+      work as labelled.
+- [ ] **Drop position split (playlist target):** on a playlist row,
+      hover in the top ½ to see an "insert before" line above; the
+      bottom ½ shows "insert after". (Folders get a 3-way split
+      because "into" is a meaningful third option there; playlist
+      leaves only have two.)
+- [ ] **Drop in empty space:** drag a row past the bottom of the
+      last row, release in the empty area below. The row is
+      appended to the root level. (No "into" indicator makes sense
+      here - the target is the root.)
+- [ ] **Drop on scrollbar:** drag a row to the right edge of the
+      panel and release on the scrollbar. The drop is silently
+      aborted (no move, no popup). This is intentional - we don't
+      have a meaningful interpretation of "drop on the scrollbar".
+- [ ] **Multi-select drag:** ctrl-click two non-contiguous playlist
+      rows to multi-select, then drag either of them. Both rows
+      move together to the new position. Try also with
+      non-adjacent rows in different folders (one at root, one in
+      a folder) - both move as a set, and the order in the
+      destination preserves the original selection order.
+- [ ] **Cycle prevention (folder into its own child):** create
+      folder A containing folder B, then drag A onto B. The "into"
+      zone is forbidden (A is one of the forbidden targets via the
+      B-ancestor-of-A path); instead, hovering in the middle of B
+      shows an "insert before" line and release moves A to be a
+      sibling of B (above it). Verify A is NOT moved inside B.
+- [ ] **Cycle prevention (folder onto itself):** drag a folder row
+      onto itself. The drop is silently aborted (no move) - the
+      playlist-row forbidden check refuses to suggest a target, and
+      the folder-row "into" check is also forbidden, leaving no
+      valid drop position.
+- [ ] **Drag a single row that isn't currently selected:** with no
+      selection, click-and-hold a row and drag. The row becomes the
+      selection (highlighted) at the moment the drag activates
+      (past the threshold), and only that one row is dragged. This
+      matches Windows Explorer.
+- [ ] **Click vs drag threshold:** click and release without
+      moving (or with only a few pixels of jiggle). The selection
+      updates normally - no drag is initiated. The threshold is
+      5px, deliberately forgiving.
+- [ ] **Drag past the panel edge:** start a drag inside the panel
+      and drag the mouse out the bottom. The drag is cancelled
+      (`on_mouse_leave` clears the state). This is the safe
+      default - we can't reliably detect mouseup outside the panel.
+- [ ] **Selection cleared after drop:** after a successful drop,
+      the selection is cleared (the moved rows now live at
+      different flat indices, and tracking that would be fiddly
+      without obvious value). The user can ctrl-click to re-select
+      what they just moved if they need to keep acting on it.
+- [ ] **Persistence:** drag a few rows, close foobar2000, reopen.
+      The moved rows are where you left them - the tree file was
+      written by `TreeStore.moveNodes` → `scheduleSave()`.
+- [ ] **F2 + drag don't conflict:** with a playlist selected (F2
+      would rename it), click-and-hold on a different playlist and
+      drag. The drag works as expected, no rename dialog appears.
+- [ ] **Disclosure click doesn't start a drag:** click directly on
+      a folder's `▾` / `▸` glyph. The folder expands or collapses
+      and no drag is initiated, even if you move the mouse a few
+      pixels during the click.
+
 ## Known limitations (by design, for this phase)
 
 - The `MouseMask` / `KeyMask` bit values for the `mask` argument of
@@ -359,12 +444,35 @@ verification against a real foobar2000 + SMP install:
   in DUI / CUI preferences won't be reflected until the panel
   reloads. The `refreshTheme()` method on `TreeView` is the hook
   once those callbacks land.
-- No right-click context menu yet - Phase 6.
-- No drag & drop reorder yet - Phase 5 (drag-drop, OLE drag-enter /
-  drop on the tree from itself and from Explorer).
+- **No external drag yet** - dropping files from Explorer or tracks
+  from another foobar2000 panel does nothing useful. SMP's
+  `on_drag_enter` / `on_drag_over` / `on_drag_drop` callbacks are
+  declared in the type definitions but not registered in `main.ts`
+  yet. Phase 5 Round 2 will wire these up and handle the two
+  cases: Explorer file drop creates a new playlist; foobar track
+  drop onto a playlist row adds to that playlist (with Ctrl = copy
+  per legacy foo_plorg behaviour).
+- **No right-click context menu yet** - Phase 6 (which will also
+  introduce the "New Folder" / "New Playlist" / "Delete" /
+  "Sort" entries that the user expects from a tree-based playlist
+  manager).
 - `on_mouse_rbtn_up` is wired as a no-op (returns without
   touching the selection) so SMP's default behaviour applies
   cleanly until Phase 6 builds the real context menu.
+- **Drag-cursor change isn't done.** Windows normally changes the
+  cursor to a "move" cursor during drag; we don't. We rely on the
+  drop indicator (line / folder frame) for feedback. SMP's
+  `window.SetCursor` exists but the cursor-ID constants aren't
+  documented in the version of the API docs we cross-reference,
+  so we left the cursor alone rather than guess. Easy to add once
+  the constants are confirmed.
+- **Drag auto-scroll isn't done.** Dragging near the top or
+  bottom of the panel doesn't auto-scroll the tree. For trees
+  that fit on one screen this is irrelevant; for longer trees
+  the user has to scroll with the wheel mid-drag, which is
+  awkward. Add as a follow-up: a `setInterval` started when the
+  cursor is within `SCROLL_MARGIN_PX` of either edge, until the
+  drag ends.
 - The v2-to-v3 migration is a one-time name+closest-index heuristic
   for nodes that load without a GUID. With duplicate names AND a
   reorder having happened since the file was last written, the
@@ -373,19 +481,21 @@ verification against a real foobar2000 + SMP install:
   with GUIDs and never re-runs the heuristic, so this is a
   one-shot concern at most.
 
-## Next: Phase 5
+## Next: Phase 5 Round 2
 
-Drag & drop. With the GUID refactor in place, the tricky part of
-internal reorder - keeping the tree's references correct after a
-move - is now handled automatically by `reconcile()` following the
-GUID. So Phase 5's internal-reorder scope is mostly the UI:
+External drag-and-drop - the SMP `on_drag_*` callbacks, which
+handles two cases:
 
-- drag a row to reorder within its parent
-- drag onto a folder to move INTO it
-- drag between rows to insert at a position
-- drag from Explorer / foobar2000 itself to create / append
+- **Explorer file drop** (action.IsInternal = false, action.Text
+  contains file paths) - create a new playlist containing those
+  files. The target is a folder (drop inside) or the root (drop in
+  empty space).
+- **Foobar track drop** (action.IsInternal = true, action.Playlist
+  is a handle list) - add the tracks to the target playlist. The
+  target must be a playlist row, not a folder. Ctrl-held = copy
+  instead of move (per legacy foo_plorg behaviour).
 
-Then track-drop-onto-playlist (with Ctrl = copy per legacy
-foo_plorg behaviour), and finally folder / playlist creation
-through a right-click context menu (which then bumps us into Phase 6
-proper).
+Plus the cross-cutting question of what to do with each case when
+the drop target is the panel background vs a specific row - which
+is a "where exactly did the user drop" question the row hit-test
+already answers.
