@@ -4,7 +4,42 @@ A reimplementation of foobar2000 v1's `foo_plorg` (playlist organizer /
 folder tree) as a foobar2000 v2 Spider Monkey Panel script, written in
 TypeScript and bundled to a single flat JS file.
 
-## Status: Phase 5 Round 1 - internal drag-and-drop
+## Requirements
+
+This script depends on `plman.GetGUID` / `plman.FindByGUID`, which are
+**exclusive to the [dima-lur/spider-monkey-panel-x64](https://github.com/dima-lur/spider-monkey-panel-x64)
+fork** of Spider Monkey Panel. They are not present in the mainline
+[TheQwertiest/foo_spider_monkey_panel](https://github.com/TheQwertiest/foo_spider_monkey_panel)
+build. This is a deliberate, permanent dependency, not a
+feature-detected fallback path - the playlist-identity model this
+project is built around only works with a stable GUID, and
+maintaining a degraded "trust index" fallback for mainline SMP was
+judged not worth the added complexity. If you're on mainline SMP,
+this script will throw on startup; switch to the fork above.
+
+## Status: Phase 5 Round 1 - internal drag-and-drop (checklist passed, two refinements applied)
+
+Phase 5 Round 1's verification checklist (below) has passed against a
+real foobar2000 + SMP install. Two behavioral refinements were made
+afterward, based on that hands-on testing:
+
+- **Drop on the bottom band of an expanded folder now prepends as the
+  first child**, instead of inserting as a sibling after the folder's
+  entire subtree. When a folder is expanded, its bottom quarter sits
+  visually adjacent to its first child's row - there's no gap - so
+  landing there reads as "insert right here" (first child), not
+  "insert after everything currently showing under this folder."
+  Collapsed or empty folders keep the old "insert after" behavior,
+  since there's no child row to be visually adjacent to. See the new
+  `'into-start'` drop position in `TreeView.ts`.
+- **Row selection now applies immediately on mouse-down** instead of
+  being deferred to mouse-up, for every click except one: a plain
+  click (no ctrl/shift) on a row that's already part of a multi-row
+  selection is still deferred, so that click-and-drag on a member of
+  an existing multi-selection drags the whole set rather than
+  collapsing to a single row before the drag can start. This mirrors
+  Windows Explorer's own behavior. See `deferSelectionChange` in
+  `TreeView.onMouseLbtnDown`.
 
 Phases 1, 2, and 3 are complete. Phases 1 and 2 are confirmed against a
 real foobar2000 + SMP install - see "Verification status" below. Phase 4

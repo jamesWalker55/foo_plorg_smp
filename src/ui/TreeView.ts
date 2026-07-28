@@ -68,7 +68,7 @@ interface HitResult {
  */
 interface DropTarget {
   rowIndex: number;
-  position: 'before' | 'after' | 'into';
+  position: 'before' | 'after' | 'into' | 'into-start';
 }
 
 /**
@@ -101,6 +101,11 @@ interface InternalDragState {
   /** The hit result from the lbutton-down, used to commit a click
    *  if the user releases without dragging. */
   clickHit: HitResult | null;
+  /** True when onMouseLbtnDown already applied the click's selection
+   *  change (the common case - see onMouseLbtnDown). False only for
+   *  the deferred case (plain click on an already-selected row),
+   *  where onMouseLbtnUp still needs to apply it if no drag occurred. */
+  selectionAlreadyApplied: boolean;
 }
 
 export class TreeView {
@@ -337,6 +342,21 @@ export class TreeView {
     return this.scrollOffsetPx;
   }
 
+  /** Applies a plain/ctrl/shift click's selection change. Shared between
+   *  the immediate-apply path (onMouseLbtnDown) and the deferred-apply
+   *  path (onMouseLbtnUp, for the one case where we hold off - see
+   *  onMouseLbtnDown's comment on `deferSelectionChange`). */
+  private applyClickSelection(hit: HitResult, isCtrl: boolean, isShift: boolean): void {
+    if (isShift) {
+      const target = this.selection.extendRangeTo(hit.rowIndex);
+      this.scrollSelectionIntoView(target);
+    } else if (isCtrl) {
+      this.selection.toggle(hit.rowIndex);
+    } else {
+      this.selection.setSingle(hit.rowIndex);
+    }
+  }
+
   onMouseLbtnDown(x: number, y: number, mask: number): void {
     const hit = this.hitTest(x, y);
 
@@ -367,34 +387,35 @@ export class TreeView {
       return;
     }
 
-    // We don't yet know whether this is a click or a drag, so we
-    // record the source rows + start position and defer the
-    // selection change + activation to the matching mouseup. The
-    // selection is NOT updated here, so the user sees no visual
-    // change during the (short) window between lbtn_down and the
-    // lbtn_up that commits a click.
-    //
-    // If the selection is non-empty, the drag moves the whole
-    // selection. If empty, the drag moves the just-clicked row.
-    // Either way, the source is snapshotted now so subsequent
-    // selection changes (e.g. another panel stealing focus) don't
-    // change what's being dragged.
     const isCtrl = (mask & MouseMask.CONTROL) !== 0;
     const isShift = (mask & MouseMask.SHIFT) !== 0;
 
+    // Explorer semantics: a plain click (no modifier) on a row that's
+    // already part of a multi-selection does NOT change the selection
+    // yet - it might turn into a drag of the whole set, and collapsing
+    // to a single row here would make that impossible. Every other
+    // click (a row outside the current selection, or any ctrl/shift
+    // click) has an unambiguous outcome regardless of what happens
+    // next, so it applies immediately - the user sees the highlight
+    // change the instant they press down, not on release.
+    const deferSelectionChange =
+      !isCtrl && !isShift && this.selection.getSize() > 0 && this.selection.isSelected(hit.rowIndex);
+
     let sourceRows: number[];
-    if (this.selection.getSize() > 0 && !isCtrl && !isShift) {
-      // Drag the current selection as-is. If the clicked row is
-      // already in the selection this is just "drag what I have";
-      // if it isn't, fall through to the single-row case so the
-      // user can grab a row that's not currently selected.
-      if (this.selection.isSelected(hit.rowIndex)) {
-        sourceRows = [...this.selection.iter()];
-      } else {
-        sourceRows = [hit.rowIndex];
-      }
+    if (deferSelectionChange) {
+      sourceRows = [...this.selection.iter()];
     } else {
+      this.applyClickSelection(hit, isCtrl, isShift);
+      const options = this.treeStore.getDocument().options;
+      if (options.activateOnSingleClick && isPlaylistNode(hit.row.node)) {
+        plman.ActivePlaylist = hit.row.node.index;
+      }
+      // Drag source is always just the clicked row here: ctrl/shift
+      // clicks build up a selection the user didn't necessarily mean
+      // to drag as a set, and a plain click on a previously-unselected
+      // row has already collapsed the selection to that one row.
       sourceRows = [hit.rowIndex];
+      window.Repaint();
     }
 
     this.internalDrag = {
@@ -403,6 +424,7 @@ export class TreeView {
       dropTarget: null,
       startX: x,
       startY: y,
+      selectionAlreadyApplied: !deferSelectionChange,
       active: false,
       clickHit: hit,
     };
@@ -488,28 +510,21 @@ export class TreeView {
       return;
     }
 
-    // Click commit (no drag occurred). Reproduce the original
-    // lbtn_down selection/activation logic against the hit
-    // result captured at lbtn_down time.
+    // Click commit (no drag occurred). If onMouseLbtnDown already
+    // applied the selection change (the common case now), there's
+    // nothing left to do - repainting isn't even needed since nothing
+    // changed between down and up. Only the deferred case (plain click
+    // on an already-selected row, held for a possible multi-drag that
+    // didn't happen) still needs its selection collapse applied here.
     const hit = drag?.clickHit ?? null;
-    if (hit === null) {
-      // No drag state and no hit - shouldn't happen via the
-      // normal mouse flow (lbtn_down would have set clickHit
-      // before we got here), but defensively no-op.
+    if (hit === null || drag?.selectionAlreadyApplied) {
       return;
     }
 
     const isCtrl = (mask & MouseMask.CONTROL) !== 0;
     const isShift = (mask & MouseMask.SHIFT) !== 0;
 
-    if (isShift) {
-      const target = this.selection.extendRangeTo(hit.rowIndex);
-      this.scrollSelectionIntoView(target);
-    } else if (isCtrl) {
-      this.selection.toggle(hit.rowIndex);
-    } else {
-      this.selection.setSingle(hit.rowIndex);
-    }
+    this.applyClickSelection(hit, isCtrl, isShift);
 
     const options = this.treeStore.getDocument().options;
     if (options.activateOnSingleClick && isPlaylistNode(hit.row.node)) {
@@ -883,6 +898,21 @@ export class TreeView {
         // one of its own descendants would create a cycle).
         return intoForbidden ? { rowIndex, position: 'before' } : { rowIndex, position: 'into' };
       } else {
+        // Bottom band. If the folder is forbidden (cycle risk),
+        // fall back to "before" - same reasoning as the middle
+        // zone. Otherwise: an expanded folder with visible children
+        // has no gap between its own row and its first child's row,
+        // so this band reads as "insert right here" - which means
+        // *first child of this folder*, not "sibling after the
+        // folder's entire subtree" (that reading only makes sense
+        // when the folder is collapsed or empty, where the next
+        // visual row genuinely is the next sibling).
+        if (intoForbidden) {
+          return { rowIndex, position: 'before' };
+        }
+        if (row.node.expanded && row.node.children.length > 0) {
+          return { rowIndex, position: 'into-start' };
+        }
         return { rowIndex, position: 'after' };
       }
     }
@@ -921,6 +951,10 @@ export class TreeView {
         if (!isFolderNode(row.node)) return; // shouldn't happen
         targetParent = row.node.children;
         targetIndex = targetParent.length;
+      } else if (target.position === 'into-start') {
+        if (!isFolderNode(row.node)) return; // shouldn't happen
+        targetParent = row.node.children;
+        targetIndex = 0;
       } else {
         targetParent = row.parent;
         const idxInParent = targetParent.indexOf(row.node);

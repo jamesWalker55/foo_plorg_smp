@@ -54,9 +54,16 @@ declare const plman: {
 
   UndoBackup(playlistIndex: number): void;
 
-  /** Undocumented GUID methods */
+  /**
+   * GUID methods exclusive to the dima-lur/spider-monkey-panel-x64 fork
+   * (https://github.com/dima-lur/spider-monkey-panel-x64). Not present in
+   * mainline TheQwertiest/foo_spider_monkey_panel - this project is built
+   * against the fork specifically. See "Requirements" in README.md.
+   */
+  /** Throws if playlistIndex is out of bounds. */
   GetGUID(playlistIndex: number): string;
-  FindByGUID(str: string): string;
+  /** Returns the playlist index, or -1 if no playlist has this GUID. */
+  FindByGUID(guid: string): number;
 };
 
 // ---------------------------------------------------------------------------
